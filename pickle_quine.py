@@ -95,14 +95,25 @@ def make_pickle(golfed):
 GOLFED_PART_2 = (
     pickle.MEMOIZE,                             # store the string in memo 0
 
-    pickle.GLOBAL, b'operator\nadd\n',          # add
+    # Here we use an extra trick: since we load two globals from operator we
+    # can save a few bytes by storing 'operator' only once, and calling
+    # STACK_GLOBAL (which is otherwise marginally less efficient) twice.
+    pickle.SHORT_BINSTRING, b'\x08', b'operator',
+    pickle.MEMOIZE,                             # store it in memo 1
+
+    pickle.SHORT_BINSTRING, b'\x03', b'add',
+    pickle.STACK_GLOBAL,                        # operator.add
     pickle.DUP,                                 # copy it
 
-    pickle.GLOBAL, b'operator\ngetitem\n',      # getitem
-    pickle.MEMOIZE,                             # store it in memo 1
+    pickle.BINGET, b'\x01',                     # operator
+    pickle.SHORT_BINSTRING, b'\x07', b'getitem',
+    pickle.STACK_GLOBAL,                        # operator.getitem
+    pickle.MEMOIZE,                             # store it in memo 2
+
     pickle.BINGET, b'\x00',                     # the string
     pickle.GLOBAL, b'builtins\nslice\n',        # slice
-    pickle.MEMOIZE,                             # store it in memo 2
+    pickle.MEMOIZE,                             # store it in memo 3
+    # The canonical arg here would be 0, but None is valid and saves a byte.
     pickle.NONE,                                # None
     pickle.BININT1, b'\x04',                    # 4
     pickle.TUPLE2, pickle.REDUCE,               # call slice --> slice(None, 4)
@@ -111,9 +122,9 @@ GOLFED_PART_2 = (
     pickle.BINGET, b'\x00',                     # the string
     pickle.TUPLE2, pickle.REDUCE,               # call add
 
-    pickle.BINGET, b'\x01',                     # getitem
+    pickle.BINGET, b'\x02',                     # getitem
     pickle.BINGET, b'\x00',                     # the string
-    pickle.BINGET, b'\x02',                     # slice
+    pickle.BINGET, b'\x03',                     # slice
     pickle.BININT1, b'\x04',                    # 4
     pickle.NONE,                                # None
     pickle.TUPLE2, pickle.REDUCE,               # call slice --> slice(4, None)
