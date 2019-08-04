@@ -28,38 +28,51 @@ PART_1 = (
 # So here we go:
 PART_2 = (
     pickle.BINPUT, b'\x00',                     # store the string in memo 0
+
     pickle.GLOBAL, b'operator\ngetitem\n',      # put operator.getitem on stack
     pickle.BINPUT, b'\x01',                     # store it in memo 1
+
     pickle.GLOBAL, b'builtins\nslice\n',        # put slice on stack
     pickle.BINPUT, b'\x02',                     # store it in memo 2
+
     pickle.BININT1, b'\x00',                    # put 0 on stack
     pickle.BININT1, b'\x07',                    # put 7 on stack
     pickle.TUPLE2,                              # build those into (0, 7)
     pickle.REDUCE,                              # reduce --> slice(0, 7)
     pickle.BINPUT, b'\x03',                     # store that in memo 3
+
     pickle.BINGET, b'\x02',                     # load slice from memo 2
     pickle.BININT1, b'\x07',                    # put 7 on stack
     pickle.NONE,                                # put None on stack
     pickle.TUPLE2,                              # build those into (7, None)
     pickle.REDUCE,                              # reduce -> slice(7, None)
     pickle.BINPUT, b'\x04',                     # store that in memo 4
+
     pickle.BINGET, b'\x01',                     # load getitem from memo 1
     pickle.BINGET, b'\x00',                     # load the string from memo 0
     pickle.BINGET, b'\x03',                     # load slice(0, 7) from memo 3
     pickle.TUPLE2, pickle.REDUCE,               # tuple + call --> string[:7]
     pickle.BINPUT, b'\x05',                     # store that in memo 5
+
     pickle.BINGET, b'\x01',                     # load getitem from memo again
     pickle.BINGET, b'\x00',                     # load the string from memo 0
     pickle.BINGET, b'\x04',                     # slice(7, None) from memo 4
     pickle.TUPLE2, pickle.REDUCE,               # tuple + call --> string[7:]
     pickle.BINPUT, b'\x06',                     # store that in memo 6
+
     pickle.GLOBAL, b'operator\nadd\n',          # put operator.add on stack
-    pickle.DUP,                                 # make 2 copies
+    pickle.BINPUT, b'\x07',                     # store that in memo 7
+
     pickle.BINGET, b'\x05',                     # load string[:7] from memo 5
     pickle.BINGET, b'\x00',                     # load string from memo 0
     pickle.TUPLE2, pickle.REDUCE,               # build tuple, call +
+    pickle.BINPUT, b'\x08',                     # store that in memo 8
+
+    pickle.BINGET, b'\x07',                     # load operator.add from memo 7
+    pickle.BINGET, b'\x08',                     # string[:7] + string from memo
     pickle.BINGET, b'\x06',                     # load string[7:] from memo 6
     pickle.TUPLE2, pickle.REDUCE,               # build tuple, call + again
+
     pickle.STOP,                                # STOP
 )
 
