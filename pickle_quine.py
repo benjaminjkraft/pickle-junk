@@ -88,25 +88,21 @@ def make_pickle(golfed):
 
 
 # Now we golf it.  Only part 2 has anything interesting to golf.  Our main
-# technique is whenever a value is used only once, inline it at is place of
-# use, and don't memoize it at all.  This relies on the stack a lot more, and
-# it can be harder to see what is the argument to what.  We also use
-# MEMOIZE, which is shorthand for BINPUT [next unused value].
+# technique is to inline a value at its place of use, and if that's its only
+# use, don't memoize it at all.  This relies on the stack a lot more, and it
+# can be harder to see what is the argument to what.  We also use MEMOIZE,
+# which is shorthand for BINPUT [next unused value].
 GOLFED_PART_2 = (
     pickle.MEMOIZE,                             # store the string in memo 0
 
-    pickle.GLOBAL, b'operator\ngetitem\n',      # put operator.getitem on stack
-    pickle.MEMOIZE,                             # store it in memo 1
-
-    pickle.GLOBAL, b'builtins\nslice\n',        # put slice on stack
-    pickle.MEMOIZE,                             # store it in memo 2
-
-    pickle.GLOBAL, b'operator\nadd\n',          # put operator.add on stack
+    pickle.GLOBAL, b'operator\nadd\n',          # add
     pickle.DUP,                                 # copy it
 
-    pickle.BINGET, b'\x01',                     # getitem
+    pickle.GLOBAL, b'operator\ngetitem\n',      # getitem
+    pickle.MEMOIZE,                             # store it in memo 1
     pickle.BINGET, b'\x00',                     # the string
-    pickle.BINGET, b'\x02',                     # slice
+    pickle.GLOBAL, b'builtins\nslice\n',        # slice
+    pickle.MEMOIZE,                             # store it in memo 2
     pickle.NONE,                                # None
     pickle.BININT1, b'\x04',                    # 4
     pickle.TUPLE2, pickle.REDUCE,               # call slice --> slice(None, 4)
@@ -147,7 +143,10 @@ def main(filename, golfed):
     check_pickle(data)
     with open(filename, 'wb') as f:
         f.write(data)
-    print(f'Quine works!  Wrote to {filename}.')
+    if golfed:
+        print(f'Golfed to {len(data)} bytes!  Wrote to {filename}.')
+    else:
+        print(f'Quine works!  Wrote to {filename}.')
 
 
 if __name__ == '__main__':
