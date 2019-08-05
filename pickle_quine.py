@@ -54,25 +54,25 @@ PART_2 = (
     BINGET, b'\x02',                        # load getitem from memo 2
     BINGET, b'\x00',                        # load the string from memo 0
     BINGET, b'\x04',                        # load slice(None, 4) from memo 4
-    TUPLE2, REDUCE,                         # tuple + call --> string[:4]
+    TUPLE2, REDUCE,                         # call --> string[:4]
     BINPUT, b'\x06',                        # store that in memo 6
 
     BINGET, b'\x02',                        # load getitem from memo 2 again
     BINGET, b'\x00',                        # load the string from memo 0
     BINGET, b'\x05',                        # slice(4, None) from memo 5
-    TUPLE2, REDUCE,                         # tuple + call --> string[4:]
+    TUPLE2, REDUCE,                         # call --> string[4:]
     BINPUT, b'\x07',                        # store that in memo 7
 
     BINGET, b'\x03',                        # load operator.add from memo 3
     BINGET, b'\x06',                        # load string[:4] from memo 6
     BINGET, b'\x00',                        # load string from memo 0
-    TUPLE2, REDUCE,                         # build tuple, call +
+    TUPLE2, REDUCE,                         # call
     BINPUT, b'\x08',                        # store that in memo 8
 
     BINGET, b'\x03',                        # load operator.add from memo 3
     BINGET, b'\x08',                        # string[:4] + string from memo
     BINGET, b'\x07',                        # load string[4:] from memo 7
-    TUPLE2, REDUCE,                         # build tuple, call + again
+    TUPLE2, REDUCE,                         # call
 
     STOP,                                   # STOP
 )
