@@ -2,31 +2,20 @@
 from pickle import *
 import struct
 
+# For explanation, see my blog post at TODO.
 
-# So here's the plan.  We're going to make a pickle which will consist of two
-# parts, each of which will be repeated twice to form the whole 
-
-# Part 1 is pretty simple: it consists of the pickle version 3 header
-# followed by the preamble to the string consisting of part 1 followed by part
-# 2.  (We'll fill in its length later.)
+# Part 1 is the part before the string itself.  It's just the version header,
+# and the setup for the string.
 PART_1 = (
     PROTO, b'\x03',                             # pickle version 3 header
     SHORT_BINBYTES,                             # bytestring (length TBD)
 )
 
-# After part 1 (plus one byte of length) executes, our stack will have a single
-# value, which will be the string consisting of part 1 + part 2 (hereafter "the
-# string").  Part 2 will consist of everything we need to assemble that into
-# the whole pickle: namely we need to split it at index 4 and then concatenate
-# each half twice.
-
-# Conveniently, pickle has a way of calling an arbitrary function.  First, we
-# load it with GLOBAL <module>\n<name>\n.  Then, we put the arg-tuple on the
-# stack.  Finally, we call REDUCE (for reduce) which calls the function on the
-# arguments.  To do the string slicing, we'll call
-#   operator.getitem(<str>, builtins.slice(start, end))
-# and we'll then add those up with operator.add.
-# So here we go:
+# Part 2 is what comes after the string itself: it assumes we have the string
+# on the stack, and runs code equivalent to
+#   the_string[4:] + the_string + the_string[:4]
+# leaving the result on the stack to be returned.  (See the blog post for
+# more.)
 PART_2 = (
     BINPUT, b'\x00',                        # store the string in memo 0
 
@@ -54,37 +43,44 @@ PART_2 = (
     BINGET, b'\x02',                        # load getitem from memo 2
     BINGET, b'\x00',                        # load the string from memo 0
     BINGET, b'\x04',                        # load slice(None, 4) from memo 4
-    TUPLE2, REDUCE,                         # call --> string[:4]
+    TUPLE2, REDUCE,                         # call --> the_string[:4]
     BINPUT, b'\x06',                        # store that in memo 6
 
     BINGET, b'\x02',                        # load getitem from memo 2 again
     BINGET, b'\x00',                        # load the string from memo 0
     BINGET, b'\x05',                        # slice(4, None) from memo 5
-    TUPLE2, REDUCE,                         # call --> string[4:]
+    TUPLE2, REDUCE,                         # call --> the_string[4:]
     BINPUT, b'\x07',                        # store that in memo 7
 
     BINGET, b'\x03',                        # load operator.add from memo 3
-    BINGET, b'\x06',                        # load string[:4] from memo 6
-    BINGET, b'\x00',                        # load string from memo 0
+    BINGET, b'\x06',                        # load the_string[:4] from memo 6
+    BINGET, b'\x00',                        # load the_string from memo 0
     TUPLE2, REDUCE,                         # call
     BINPUT, b'\x08',                        # store that in memo 8
 
     BINGET, b'\x03',                        # load operator.add from memo 3
-    BINGET, b'\x08',                        # string[:4] + string from memo
-    BINGET, b'\x07',                        # load string[4:] from memo 7
+    BINGET, b'\x08',                        # load the_string[:4] + the_string
+    BINGET, b'\x07',                        # load the_string[4:] from memo 7
     TUPLE2, REDUCE,                         # call
 
     STOP,                                   # STOP
 )
 
 
-def make_pickle(golfed):
+def make_pickle(golfed=False):
+    """Returns the pickle-quine.
+
+    If "golfed" is true, we return the minimized version; if false we return
+    the one that's easier to understand.
+    """
     part_1 = b''.join(PART_1)
     part_2 = b''.join(GOLFED_PART_2 if golfed else PART_2)
-    # Now, we just have to tack the correct length (of the string) onto part 1,
-    # and duplicate everything appropriately.
+    # We tack the length onto part 1:
     length = len(part_1) + 1 + len(part_2)
-    return (part_1 + b'%c' % length) * 2 + part_2 * 2
+    part_1 = part_1 + b'%c' % length
+    # Now glue everything together.
+    the_string = part_1 + part_2
+    return part_1 + the_string + part_2
 
 
 # Now we golf it.  Only part 2 has anything interesting to golf.  Our main
@@ -135,20 +131,13 @@ GOLFED_PART_2 = (
 )
 
 
-def make_golfed_pickle():
-    part_1 = b''.join(PART_1)
-    part_2 = b''.join(GOLFED_PART_2)
-    # Now, we just have to swap in the correct length (of the string) as bytes
-    # 3:7, and duplicate everything appropriately.
-    length = len(part_1) + 1 + len(part_2)
-    return (part_1 + b'%c' % length) * 2 + part_2 * 2
-
-
 def check_pickle(data):
+    """Checks that the input is a pickle-quine."""
     assert data == loads(data)
 
 
-def main(filename, golfed):
+def main(filename, golfed=False):
+    """Generates the pickle quine, checks it, and writes to file."""
     data = make_pickle(golfed)
     check_pickle(data)
     with open(filename, 'wb') as f:
