@@ -2,7 +2,8 @@
 from pickle import *
 import struct
 
-# For explanation, see my blog post at TODO.
+# For explanation, see my blog post:
+#   https://www.benkraft.org/2021/03/21/pickle-quine/
 
 # Part 1 is the part before the string itself.  It's just the version header,
 # and the setup for the string.
