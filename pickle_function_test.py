@@ -15,6 +15,14 @@ def _roundtrip(val):
     # use _loads (the python implementation) for better stacktraces
     return pickle._loads(pickled)
 
+def _roundtrip_test(val, assertion_func):
+    assertion_func(val)
+    val_again = _roundtrip(val)
+    # TODO: also assert str(val) == str(val_again), to make sure we get the
+    # name and stuff right?  Looks like it's not true now :/
+    assertion_func(val_again)
+
+
 
 ONE = 1
 def global_add_two(n): return n + ONE + 1
@@ -24,89 +32,55 @@ global_attrs.x = 1
 
 
 class TestSimpleFunctions(unittest.TestCase):
-    def test_lambda(self):
+    def test_simple(self):
+        def test(f):
+            self.assertEqual(f(1), 3)
+
         add_two = lambda n: n + ONE + 1
-        add_two_again = _roundtrip(add_two)
-        self.assertEqual(add_two_again(1), 3)
+        _roundtrip_test(add_two, test)
 
-    def test_inline_def(self):
         def add_two(n): return n + ONE + 1
-        add_two_again = _roundtrip(add_two)
-        self.assertEqual(add_two_again(1), 3)
+        _roundtrip_test(add_two, test)
 
-    def test_global_def(self):
-        add_two_again = _roundtrip(global_add_two)
-        self.assertEqual(add_two_again(1), 3)
+        _roundtrip_test(global_add_two, test)
 
-    def test_defaults_lambda(self):
+    def test_defaults(self):
+        def test(f):
+            self.assertEqual(f(1, 2, d=3), 9)
+            self.assertEqual(f(1, 2, 3, d=4, e=5), 15)
+            with self.assertRaises(TypeError):
+                f()
+            with self.assertRaises(TypeError):
+                f(1, 2, 3)
+            with self.assertRaises(TypeError):
+                f(a=1, b=2, d=3)
+            with self.assertRaises(TypeError):
+                f(1, 2, 3, 4, 5)
+            with self.assertRaises(TypeError):
+                f(a=1, b=2, c=3, d=4, e=5)
+
         defaults = lambda a, /, b, c=1, *, d, e=2: a + b + c + d + e
+        _roundtrip_test(defaults, test)
 
-        defaults_again = _roundtrip(defaults)
-        self.assertEqual(defaults_again(1, 2, d=3), 9)
-        self.assertEqual(defaults_again(1, 2, 3, d=4, e=5), 15)
-        with self.assertRaises(TypeError):
-            defaults_again()
-        with self.assertRaises(TypeError):
-            defaults_again(1, 2, 3)
-        with self.assertRaises(TypeError):
-            defaults_again(a=1, b=2, d=3)
-        with self.assertRaises(TypeError):
-            defaults_again(1, 2, 3, 4, 5)
-        with self.assertRaises(TypeError):
-            defaults_again(a=1, b=2, c=3, d=4, e=5)
-
-    def test_defaults_local_def(self):
         def defaults(a, /, b, c=1, *, d, e=2): return a + b + c + d + e
+        _roundtrip_test(defaults, test)
 
-        defaults_again = _roundtrip(defaults)
-        self.assertEqual(defaults_again(1, 2, d=3), 9)
-        self.assertEqual(defaults_again(1, 2, 3, d=4, e=5), 15)
-        with self.assertRaises(TypeError):
-            defaults_again()
-        with self.assertRaises(TypeError):
-            defaults_again(1, 2, 3)
-        with self.assertRaises(TypeError):
-            defaults_again(a=1, b=2, d=3)
-        with self.assertRaises(TypeError):
-            defaults_again(1, 2, 3, 4, 5)
-        with self.assertRaises(TypeError):
-            defaults_again(a=1, b=2, c=3, d=4, e=5)
+        _roundtrip_test(global_defaults, test)
 
-    def test_defaults_global_def(self):
-        defaults_again = _roundtrip(global_defaults)
-        self.assertEqual(defaults_again(1, 2, d=3), 9)
-        self.assertEqual(defaults_again(1, 2, 3, d=4, e=5), 15)
-        with self.assertRaises(TypeError):
-            defaults_again()
-        with self.assertRaises(TypeError):
-            defaults_again(1, 2, 3)
-        with self.assertRaises(TypeError):
-            defaults_again(a=1, b=2, d=3)
-        with self.assertRaises(TypeError):
-            defaults_again(1, 2, 3, 4, 5)
-        with self.assertRaises(TypeError):
-            defaults_again(a=1, b=2, c=3, d=4, e=5)
+    def test_attrs(self):
+        def test(f):
+            self.assertEqual(f(), None)
+            self.assertEqual(f.x, 1)
 
-    def test_attrs_lambda(self):
         attrs = lambda: None
         attrs.x = 1
+        _roundtrip_test(attrs, test)
 
-        attrs_again = _roundtrip(attrs)
-        self.assertEqual(attrs_again(), None)
-        self.assertEqual(attrs_again.x, 1)
-
-    def test_attrs_local_def(self):
         def attrs(): pass
         attrs.x = 1
+        _roundtrip_test(attrs, test)
 
-        attrs_again = _roundtrip(attrs)
-        self.assertEqual(attrs_again(), None)
-        self.assertEqual(attrs_again.x, 1)
-
-    def test_attrs_global_def(self):
-        attrs_again = _roundtrip(global_attrs)
-        self.assertEqual(attrs_again(), None)
-        self.assertEqual(attrs_again.x, 1)
+        _roundtrip_test(global_attrs, test)
 
 
 def global_factorial(n):
@@ -136,25 +110,26 @@ global_recursive_attrs.self = global_recursive_attrs
 
 
 class TestRecursiveFunctions(unittest.TestCase):
-    def test_lambda(self):
-        f = lambda n: n * f(n - 1) if n > 0 else 1
-        f_again = _roundtrip(f)
-        self.assertEqual(f_again(1), 1)
-        self.assertEqual(f_again(4), 24)
+    def test_simple(self):
+        def test(f):
+            self.assertEqual(f(1), 1)
+            self.assertEqual(f(4), 24)
 
-    def test_inline_def(self):
-        def f(n): return n * f(n - 1) if n > 0 else 1
-        f_again = _roundtrip(f)
-        self.assertEqual(f_again(1), 1)
-        self.assertEqual(f_again(4), 24)
+        factorial = lambda n: n * factorial(n - 1) if n > 0 else 1
+        _roundtrip_test(factorial, test)
 
-    def test_global_def(self):
-        factorial_again = _roundtrip(global_factorial)
-        self.assertEqual(factorial_again(1), 1)
-        self.assertEqual(factorial_again(4), 24)
+        def factorial(n): return n * factorial(n - 1) if n > 0 else 1
+        _roundtrip_test(factorial, test)
+
+        _roundtrip_test(global_factorial, test)
 
     def test_identity_lambda(self):
         """Test we get object-identity right in recursive functions."""
+        def test(f):
+            self.assertEqual(f(1), 2)
+            self.assertEqual(f(5), 2)
+            self.assertEqual(f.x, 2)
+
         # TODO: lol maybe actually use onelinerizer
         self_attr = lambda n: (
             (
@@ -168,13 +143,9 @@ class TestRecursiveFunctions(unittest.TestCase):
             )(
                 getattr(self_attr, 'x', None)
             ))
+        
+        _roundtrip_test(self_attr, test)
 
-        self_attr_again = _roundtrip(self_attr)
-        self.assertEqual(self_attr_again(1), 2)
-        self.assertEqual(self_attr_again(5), 2)
-        self.assertEqual(self_attr_again.x, 2)
-
-    def test_identity_inline_def(self):
         def self_attr(n):
             x = getattr(self_attr, 'x', None)
             if x is not None:
@@ -182,22 +153,21 @@ class TestRecursiveFunctions(unittest.TestCase):
             self_attr.x = n + 1
             return self_attr(0)
 
-        self_attr_again = _roundtrip(self_attr)
-        self.assertEqual(self_attr_again(1), 2)
-        self.assertEqual(self_attr_again(5), 2)
-        self.assertEqual(self_attr_again.x, 2)
+        _roundtrip_test(self_attr, test)
 
-    def test_identity_global_def(self):
         # just in case...
         if hasattr(global_self_attr, 'x'):
             del global_self_attr.x
 
-        self_attr_again = _roundtrip(global_self_attr)
-        self.assertEqual(self_attr_again(1), 2)
-        self.assertEqual(self_attr_again(5), 2)
-        self.assertEqual(self_attr_again.x, 2)
+        _roundtrip_test(global_self_attr, test)
 
     def test_defaults_lambda(self):
+        def test(f):
+            self.assertEqual(f(), (f, f))
+            self.assertEqual(f({'f': 1}, h={'f': 1}), (1, 1))
+            with self.assertRaises(TypeError):
+                f({'f': 1}, {'f': 1})
+
         default_g = {}
         default_h = {}
         recursive_defaults = (
@@ -205,17 +175,8 @@ class TestRecursiveFunctions(unittest.TestCase):
         default_g['f'] = recursive_defaults
         default_h['f'] = recursive_defaults
 
-        recursive_defaults_again = _roundtrip(recursive_defaults)
-        self.assertEqual(
-            recursive_defaults_again(),
-            (recursive_defaults_again, recursive_defaults_again))
-        self.assertEqual(
-            recursive_defaults_again({'f': 1}, h={'f': 1}),
-            (1, 1))
-        with self.assertRaises(TypeError):
-            recursive_defaults_again({'f': 1}, {'f': 1})
+        _roundtrip_test(recursive_defaults, test)
 
-    def test_defaults_local_def(self):
         default_g = {}
         default_h = {}
         def recursive_defaults(g=default_g, *, h=default_h):
@@ -223,44 +184,21 @@ class TestRecursiveFunctions(unittest.TestCase):
         default_g['f'] = recursive_defaults
         default_h['f'] = recursive_defaults
 
-        recursive_defaults_again = _roundtrip(recursive_defaults)
-        self.assertEqual(
-            recursive_defaults_again(),
-            (recursive_defaults_again, recursive_defaults_again))
-        self.assertEqual(
-            recursive_defaults_again({'f': 1}, h={'f': 1}),
-            (1, 1))
-        with self.assertRaises(TypeError):
-            recursive_defaults_again({'f': 1}, {'f': 1})
+        _roundtrip_test(recursive_defaults, test)
 
-    def test_defaults_global_def(self):
-        recursive_defaults_again = _roundtrip(global_recursive_defaults)
-        self.assertEqual(
-            recursive_defaults_again(),
-            (recursive_defaults_again, recursive_defaults_again))
-        self.assertEqual(
-            recursive_defaults_again({'f': 1}, h={'f': 1}),
-            (1, 1))
-        with self.assertRaises(TypeError):
-            recursive_defaults_again({'f': 1}, {'f': 1})
+        _roundtrip_test(global_recursive_defaults, test)
 
     def test_attrs_lambda(self):
+        def test(f):
+            self.assertEqual(f(), None)
+            self.assertEqual(f.self, f)
+
         recursive_attrs = lambda: None
         recursive_attrs.self = recursive_attrs
+        _roundtrip_test(recursive_attrs, test)
 
-        recursive_attrs_again = _roundtrip(recursive_attrs)
-        self.assertEqual(recursive_attrs_again(), None)
-        self.assertEqual(recursive_attrs_again.self, recursive_attrs_again)
-
-    def test_attrs_local_def(self):
         def recursive_attrs(): pass
         recursive_attrs.self = recursive_attrs
+        _roundtrip_test(recursive_attrs, test)
 
-        recursive_attrs_again = _roundtrip(recursive_attrs)
-        self.assertEqual(recursive_attrs_again(), None)
-        self.assertEqual(recursive_attrs_again.self, recursive_attrs_again)
-
-    def test_attrs_global_def(self):
-        recursive_attrs_again = _roundtrip(global_recursive_attrs)
-        self.assertEqual(recursive_attrs_again(), None)
-        self.assertEqual(recursive_attrs_again.self, recursive_attrs_again)
+        _roundtrip_test(global_recursive_attrs, test)
