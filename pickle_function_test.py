@@ -2,6 +2,8 @@
 import pickle
 import re
 import unittest
+import types
+import typing
 
 import pickle_function
 import pickle_util
@@ -27,6 +29,51 @@ def _roundtrip_test(testcase, val, assertion_func):
     assertion_func(val_again)
 
 
+class TestConsts(unittest.TestCase):
+    _IGNORED_TYPES = (
+        # we aren't trying to pickle the types.CodeType/types.FunctionType
+        # themselves, so we don't need to pickle their methods
+        types.BuiltinMethodType, types.MethodDescriptorType,
+        types.WrapperDescriptorType,
+        # nor their __class__
+        type,
+    )
+
+    _INCLUDED_TYPES = (
+        # we want to pickle all the members
+        types.MemberDescriptorType,
+        # in the case of FunctionTypes, some of the members are proxies
+        types.GetSetDescriptorType, types.MappingProxyType,
+        # types.FunctionType itself has __module__, __qualname__, __doc__,
+        # etc., but really those are members we need to include.
+        str,
+    )
+
+    def _get_attrs(self, typ):
+        retval = set()
+        for attr in dir(typ):
+            val = getattr(typ, attr)
+            if type(val) in self._INCLUDED_TYPES:
+                retval.add(attr)
+            else:
+                # Everything should either be mentioned or explicitly ignored.
+                self.assertIn(type(val), self._IGNORED_TYPES)
+        return retval
+
+    def test_code_attrs(self):
+        # We can't check that the order is correct (the constructor is in C so
+        # we can't introspect it) but we can check that the set is correct.
+        self.assertEqual(
+            # doc is only a class-attr here, no need to pickle.
+            set(pickle_function._CODE_ARGS) | {'__doc__'},
+            self._get_attrs(types.CodeType))
+
+    def test_func_attrs(self):
+        self.assertEqual(
+            set(pickle_function._FUNC_ARGS) | pickle_function._FUNC_ATTRS,
+            self._get_attrs(types.FunctionType))
+
+
 ONE = 1
 def global_add_two(n): return n + ONE + 1
 def global_make_add_two():
@@ -35,6 +82,10 @@ def global_make_add_two():
 def global_defaults(a, /, b, c=1, *, d, e=2): return a + b + c + d + e
 def global_attrs(): pass
 global_attrs.x = 1
+def global_annotations(x: int) -> int: return x
+def global_doc():
+    """This function has a docstring."""
+    pass
 
 
 class TestSimpleFunctions(unittest.TestCase):
@@ -93,6 +144,33 @@ class TestSimpleFunctions(unittest.TestCase):
         _roundtrip_test(self, attrs, test)
 
         _roundtrip_test(self, global_attrs, test)
+
+    def test_annotations(self):
+        def test(f):
+            self.assertEqual(f(1), 1)
+            self.assertEqual(typing.get_type_hints(f),
+                             {'x': int, 'return': int})
+
+        def annotations(x: int) -> int: return x
+        _roundtrip_test(self, annotations, test)
+
+        _roundtrip_test(self, global_annotations, test)
+
+    def test_doc(self):
+        def test(f):
+            self.assertEqual(f(), None)
+            self.assertEqual(f.__doc__, "This function has a docstring.")
+
+        doc = lambda: None
+        doc.__doc__ = """This function has a docstring."""
+        _roundtrip_test(self, doc, test)
+
+        def doc():
+            """This function has a docstring."""
+            pass
+        _roundtrip_test(self, doc, test)
+
+        _roundtrip_test(self, global_doc, test)
 
 
 def global_factorial(n):

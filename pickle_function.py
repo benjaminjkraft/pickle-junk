@@ -12,9 +12,9 @@ import types
 # - modules
 
 
-# These are in the order of the types.CodeType constructor.  See also
+# Arguments (in order) to the types.CodeType constructor.  See also
 # https://github.com/python/cpython/blob/3.9/Objects/codeobject.c#L117
-_CODE_ATTRS = (
+_CODE_ARGS = (
     'co_argcount',
     'co_posonlyargcount',
     'co_kwonlyargcount',
@@ -31,19 +31,32 @@ _CODE_ATTRS = (
     'co_lnotab',
     'co_freevars',
     'co_cellvars')
-# We can't check that the order is correct (the constructor is in C so we can't
-# introspect it) but we can check that the set is correct.
-assert set(_CODE_ATTRS) == {attr for attr in dir(types.CodeType)
-                            if attr.startswith('co_')}
 
-# These are the attrs of types.FuncType that aren't arguments to the
+# Arguments (in order) to the types.FunctionType constructor.
+_FUNC_ARGS = (
+    '__code__',
+    '__globals__',
+    '__name__',
+    '__defaults__',
+    '__closure__',
+)
+
+# Interesting attributes of types.FunctionType that aren't arguments to the
 # constructor (they are mutable and we copy them separately).
-_FUNC_ATTRS = (
+_FUNC_ATTRS = {
+    '__annotations__',
     '__dict__',
     '__kwdefaults__',
     '__module__',
     '__qualname__',
-)
+    # Note __doc__ is actually only needed when set explicitly (which in
+    # practice happens with things like @functools.wraps); the FunctionType
+    # constructor initializes it [1] as f.__code__.co_consts[0], so if you
+    # define it the normal way that happens on the other side too.  Anyway it's
+    # easier to just explicitly pickle it than to worry about all that.
+    # [1] https://github.com/python/cpython/blob/cbfa09b70b745c9d7393c03955600f6d1cf019e3/Objects/funcobject.c#L56    # noqa:L501
+    '__doc__',
+}
 
 
 class Pickler(pickle._Pickler):
@@ -189,6 +202,10 @@ class Pickler(pickle._Pickler):
             self.write(self.get(memoed[0]))
             return
 
+        # Figure out the args to the FunctionType constructor.
+        args = [getattr(obj, arg_name) for arg_name in _FUNC_ARGS]
+
+        # We specially handle the globals-dict.
         co_names = set(obj.__code__.co_names)
         globals_dict = self.function_globals.get(id(obj))
         if globals_dict is None:
@@ -196,8 +213,7 @@ class Pickler(pickle._Pickler):
             # chances that some weird object somewhere in the codebase crashes
             # us.
             # TODO: revisit once we can pickle modules and such.
-            globals_dict = {
-                k: v for k, v in obj.__globals__.items()
+            globals_dict = {k: v for k, v in obj.__globals__.items()
                             if k in co_names
                             # co_names can also refer to a name from
                             # __builtins__, which is the builtins module's
@@ -212,10 +228,11 @@ class Pickler(pickle._Pickler):
                             # [1] https://docs.python.org/3/reference/executionmodel.html#builtins-and-restricted-execution   # noqa:L501
                             or k == '__builtins__' and isinstance(v, dict)}
             self.function_globals[id(obj)] = globals_dict
+        args[_FUNC_ARGS.index('__globals__')] = globals_dict
 
+        # Save the function!
         self._save_global_name('types.FunctionType')
-        self.save((obj.__code__, globals_dict, obj.__name__,
-                   obj.__defaults__, obj.__closure__))
+        self.save(tuple(args))
         # Handle recursive functions (we can have self-references via
         # __globals__, __closure__, or via the items of __defaults__).
         # See module docstring for more.
@@ -244,7 +261,7 @@ class Pickler(pickle._Pickler):
             return
 
         self._save_global_name('types.CodeType')
-        self.save(tuple(getattr(obj, attr) for attr in _CODE_ATTRS))
+        self.save(tuple(getattr(obj, attr) for attr in _CODE_ARGS))
 
         # TODO: can anything in a code-type be recursive?  It doesn't seem like
         # it but it's hard to be sure.
