@@ -5,7 +5,6 @@ import unittest
 import pickle_function
 
 # TODO:
-# - something that depends on object-identity working properly with recursion
 # - more closures
 # - args, defaults, etc. -- generally go through the list of attrs
 # - pickle some actual real functions
@@ -22,6 +21,14 @@ def factorial(n):
     if n == 0:
         return 1
     return n * factorial(n - 1)
+
+
+def self_attr(n):
+    x = getattr(self_attr, 'x', None)
+    if x is not None:
+        return x
+    self_attr.x = n + 1
+    return self_attr(0)
 
 
 class TestPicklingFunctions(unittest.TestCase):
@@ -60,3 +67,43 @@ class TestPicklingFunctions(unittest.TestCase):
         factorial_again = self._roundtrip(factorial)
         self.assertEqual(factorial_again(1), 1)
         self.assertEqual(factorial_again(4), 24)
+
+    def test_recursive_identity_lambda(self):
+        """Test we get object-identity right in recursive functions."""
+        # TODO: lol maybe actually use onelinerizer
+        self_attr = lambda n: (
+            (
+                lambda x:
+                x
+                if x is not None
+                else (
+                    setattr(self_attr, 'x', n + 1),
+                    self_attr(0),
+                )[1]
+            )(
+                getattr(self_attr, 'x', None)
+            ))
+
+        self_attr_again = self._roundtrip(self_attr)
+        self.assertEqual(self_attr_again(1), 2)
+        self.assertEqual(self_attr_again(5), 2)
+
+    def test_recursive_identity_inline_def(self):
+        def self_attr(n):
+            x = getattr(self_attr, 'x', None)
+            if x is not None:
+                return x
+            self_attr.x = n + 1
+            return self_attr(0)
+
+        self_attr_again = self._roundtrip(self_attr)
+        self.assertEqual(self_attr_again(1), 2)
+        self.assertEqual(self_attr_again(5), 2)
+
+    def test_recursive_identity_global_def(self):
+        if hasattr(self_attr, 'x'):
+            del self_attr.x
+        self_attr_again = self._roundtrip(self_attr)
+        self.assertEqual(self_attr_again(1), 2)
+        self.assertEqual(self_attr_again(5), 2)
+

@@ -42,9 +42,9 @@ class Pickler(pickle._Pickler):
     def _save_global_name(self, name):
         """Saves the global with the given name.
 
-        This is like save_global, but it works for names which appear to be
-        builtins but aren't available as __builtins__.foo, such as
-        types.FunctionType.
+        This is like save_global, but it works for values of type
+        types.BuildinMethodType (i.e. anything defined in C) which
+        don't live in __builtins__, such as types.FunctionType.
         """
         module, name = name.rsplit('.', 1)
         self.save(module)
@@ -75,12 +75,13 @@ class Pickler(pickle._Pickler):
            constructor itself in save_global, and then handling the rest
            normally?
         """
-        # TODO: flag to force using the below (will need to pickle a module)
-        try:
-            return self.save_global(obj)
-        except Exception:
-            if type(obj) != types.FunctionType:   # noqa:E721
-                raise
+        # TODO: flag to allow using the below, for e.g. stdlib functions we
+        # can't pickle (will there be any????)
+        # try:
+        #     return self.save_global(obj)
+        # except Exception:
+        #     if type(obj) != types.FunctionType:   # noqa:E721
+        #         raise
 
         memoed = self.memo.get(id(obj))
         if memoed is not None:
@@ -89,29 +90,45 @@ class Pickler(pickle._Pickler):
 
         self._save_global_name('types.FunctionType')
         co_names = set(obj.__code__.co_names)
-        relevant_globals = {k: v for k, v in obj.__globals__.items()
-                            if k in co_names}
-        self.save((obj.__code__, relevant_globals, obj.__name__,
+        globals_dict = {}
+        # To handle recursive functions at module scope (where f's
+        # implementation gets f from f.__globals__), we need to do a similar
+        # trick to the one with cells below (see save_cell).
+        #
+        # For more on all this recursive stuff, see also the comments starting
+        # "Subtle." in stdlib's save_tuple.
+        self.save((obj.__code__, globals_dict, obj.__name__,
                    obj.__defaults__, obj.__closure__))
-
-        # If we're pickling a recursive function, relevant_globals or
-        # obj.__closure__ contains a reference to f, so while saving it we
-        # saved f!  So instead of proceeding, we need to pop this tuple, and
-        # return that.  See the comments starting "Subtle." in stdlib's
-        # save_tuple.
-        # TODO: to pickle recursive toplevel functions we need more --
-        # basically we need to do with the globals-dict the same thing that we
-        # do with cells down below.  (but right now we just let ordinary pickle
-        # do toplevel fns though.)
+        # We also need to early-out for non-module-scope recursive functions
+        # (where the self-reference is in obj.__closure__); in that case the
+        # cycle gets broken in save_cell, so we have already been pickled by
+        # the time we get there.  So instead of proceeding, we need to pop this
+        # tuple, and return that.
         memoed = self.memo.get(id(obj))
         if memoed is not None:
             self.write(pickle.POP + self.get(memoed[0]))
             return
 
+        # Now build the function itself.
         self.write(pickle.REDUCE)
         # TODO: need to fix up __kwdefaults__ and potentially __dict__ -- can
         # probably just call _batch_setitems.
         self.memoize(obj)
+
+        # Finally, we have to find the globals in the memo, and fix them up.
+        self.write(self.get(self.memo[id(globals_dict)][0]))
+        # Only pickle globals we actually need, to save size and reduce the
+        # chances that some weird object somewhere in the codebase crashes us.
+        relevant_globals = {k: v for k, v in obj.__globals__.items()
+                            # co_names can also refer to a name from
+                            # __builtins__, so we need to save that too.
+                            # Luckily even normal-pickle knows how to pickle
+                            # everything that's normally there, so we don't
+                            # bother to filter.
+                            if k in co_names or k == '__builtins__'}
+        self._batch_setitems(relevant_globals.items())
+        # Get the function back on top of the stack.
+        self.write(pickle.POP)
 
     dispatch[types.FunctionType] = save_function
 
