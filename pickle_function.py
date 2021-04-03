@@ -10,6 +10,7 @@ import types
 # - generators, coroutines, async generators
 # - classes, various types of methods
 # - modules
+# - fuzz-test by pickling real modules/functions/etc.
 
 
 # Arguments (in order) to the types.CodeType constructor.  See also

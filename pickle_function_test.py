@@ -8,11 +8,6 @@ import typing
 import pickle_function
 import pickle_util
 
-# TODO:
-# - more closures
-# - args, defaults, etc. -- generally go through the list of attrs
-# - pickle some actual real functions
-
 
 _REPR_ADDRESS = re.compile(' at 0x[0-9a-f]+>$')
 
