@@ -22,48 +22,18 @@ def _roundtrip_test(testcase, val, assertion_func):
 
 
 class TestConsts(unittest.TestCase):
-    _IGNORED_TYPES = (
-        # we aren't trying to pickle the types.CodeType/types.FunctionType
-        # themselves, so we don't need to pickle their methods
-        types.BuiltinMethodType, types.MethodDescriptorType,
-        types.WrapperDescriptorType,
-        # nor their __class__
-        type,
-    )
-
-    _INCLUDED_TYPES = (
-        # we want to pickle all the members
-        types.MemberDescriptorType,
-        # in the case of FunctionTypes, some of the members are proxies
-        types.GetSetDescriptorType, types.MappingProxyType,
-        # types.FunctionType itself has __module__, __qualname__, __doc__,
-        # etc., but really those are members we need to include.
-        str,
-    )
-
-    def _get_attrs(self, typ):
-        retval = set()
-        for attr in dir(typ):
-            val = getattr(typ, attr)
-            if type(val) in self._INCLUDED_TYPES:
-                retval.add(attr)
-            else:
-                # Everything should either be mentioned or explicitly ignored.
-                self.assertIn(type(val), self._IGNORED_TYPES)
-        return retval
-
     def test_code_attrs(self):
         # We can't check that the order is correct (the constructor is in C so
         # we can't introspect it) but we can check that the set is correct.
         self.assertEqual(
             # doc is only a class-attr here, no need to pickle.
             set(pickle_function._CODE_ARGS) | {'__doc__'},
-            self._get_attrs(types.CodeType))
+            pickle_util.interesting_attrs(types.CodeType))
 
     def test_func_attrs(self):
         self.assertEqual(
             set(pickle_function._FUNC_ARGS) | pickle_function._FUNC_ATTRS,
-            self._get_attrs(types.FunctionType))
+            pickle_util.interesting_attrs(types.FunctionType))
 
 
 ONE = 1

@@ -8,8 +8,11 @@ import types
 
 # TODO:
 # - generators, coroutines, async generators
-# - classes, various types of methods
+# - classes
+#   - metaclasses
+#   - various types of methods
 # - modules
+#   - do we need to handle __loader__, __package__, __spec__?
 # - fuzz-test by pickling real modules/functions/etc.
 
 
