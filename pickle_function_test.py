@@ -9,11 +9,8 @@ import pickle_function
 import pickle_util
 
 
-_REPR_ADDRESS = re.compile(' at 0x[0-9a-f]+>$')
-
-
 def _repr_without_address(val):
-    return _REPR_ADDRESS.sub('>', repr(val))
+    return re.sub(' at 0x[0-9a-f]+>$', '>', repr(val))
 
 
 def _roundtrip_test(testcase, val, assertion_func):
