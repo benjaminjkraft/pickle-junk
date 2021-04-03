@@ -1,8 +1,10 @@
 # flake8: noqa  # we do lots of weird things to test them!
 import pickle
+import re
 import unittest
 
 import pickle_function
+import pickle_util
 
 # TODO:
 # - more closures
@@ -10,22 +12,26 @@ import pickle_function
 # - pickle some actual real functions
 
 
-def _roundtrip(val):
-    pickled = pickle_function.dumps(val)
-    # use _loads (the python implementation) for better stacktraces
-    return pickle._loads(pickled)
+_REPR_ADDRESS = re.compile(' at 0x[0-9a-f]+>$')
 
-def _roundtrip_test(val, assertion_func):
+
+def _repr_without_address(val):
+    return _REPR_ADDRESS.sub('>', repr(val))
+
+
+def _roundtrip_test(testcase, val, assertion_func):
     assertion_func(val)
-    val_again = _roundtrip(val)
-    # TODO: also assert str(val) == str(val_again), to make sure we get the
-    # name and stuff right?  Looks like it's not true now :/
+    val_again = pickle_util.roundtrip(val)
+    testcase.assertEqual(_repr_without_address(val),
+                         _repr_without_address(val_again))
     assertion_func(val_again)
-
 
 
 ONE = 1
 def global_add_two(n): return n + ONE + 1
+def global_make_add_two():
+    def add_two(n): return n + ONE + 1
+    return add_two
 def global_defaults(a, /, b, c=1, *, d, e=2): return a + b + c + d + e
 def global_attrs(): pass
 global_attrs.x = 1
@@ -37,12 +43,18 @@ class TestSimpleFunctions(unittest.TestCase):
             self.assertEqual(f(1), 3)
 
         add_two = lambda n: n + ONE + 1
-        _roundtrip_test(add_two, test)
+        _roundtrip_test(self, add_two, test)
 
         def add_two(n): return n + ONE + 1
-        _roundtrip_test(add_two, test)
+        _roundtrip_test(self, add_two, test)
 
-        _roundtrip_test(global_add_two, test)
+        def make_add_two():
+            def add_two(n): return n + ONE + 1
+            return add_two
+        _roundtrip_test(self, make_add_two(), test)
+
+        _roundtrip_test(self, global_add_two, test)
+        _roundtrip_test(self, global_make_add_two(), test)
 
     def test_defaults(self):
         def test(f):
@@ -60,12 +72,12 @@ class TestSimpleFunctions(unittest.TestCase):
                 f(a=1, b=2, c=3, d=4, e=5)
 
         defaults = lambda a, /, b, c=1, *, d, e=2: a + b + c + d + e
-        _roundtrip_test(defaults, test)
+        _roundtrip_test(self, defaults, test)
 
         def defaults(a, /, b, c=1, *, d, e=2): return a + b + c + d + e
-        _roundtrip_test(defaults, test)
+        _roundtrip_test(self, defaults, test)
 
-        _roundtrip_test(global_defaults, test)
+        _roundtrip_test(self, global_defaults, test)
 
     def test_attrs(self):
         def test(f):
@@ -74,13 +86,13 @@ class TestSimpleFunctions(unittest.TestCase):
 
         attrs = lambda: None
         attrs.x = 1
-        _roundtrip_test(attrs, test)
+        _roundtrip_test(self, attrs, test)
 
         def attrs(): pass
         attrs.x = 1
-        _roundtrip_test(attrs, test)
+        _roundtrip_test(self, attrs, test)
 
-        _roundtrip_test(global_attrs, test)
+        _roundtrip_test(self, global_attrs, test)
 
 
 def global_factorial(n):
@@ -116,12 +128,12 @@ class TestRecursiveFunctions(unittest.TestCase):
             self.assertEqual(f(4), 24)
 
         factorial = lambda n: n * factorial(n - 1) if n > 0 else 1
-        _roundtrip_test(factorial, test)
+        _roundtrip_test(self, factorial, test)
 
         def factorial(n): return n * factorial(n - 1) if n > 0 else 1
-        _roundtrip_test(factorial, test)
+        _roundtrip_test(self, factorial, test)
 
-        _roundtrip_test(global_factorial, test)
+        _roundtrip_test(self, global_factorial, test)
 
     def test_identity_lambda(self):
         """Test we get object-identity right in recursive functions."""
@@ -144,7 +156,7 @@ class TestRecursiveFunctions(unittest.TestCase):
                 getattr(self_attr, 'x', None)
             ))
         
-        _roundtrip_test(self_attr, test)
+        _roundtrip_test(self, self_attr, test)
 
         def self_attr(n):
             x = getattr(self_attr, 'x', None)
@@ -153,13 +165,13 @@ class TestRecursiveFunctions(unittest.TestCase):
             self_attr.x = n + 1
             return self_attr(0)
 
-        _roundtrip_test(self_attr, test)
+        _roundtrip_test(self, self_attr, test)
 
         # just in case...
         if hasattr(global_self_attr, 'x'):
             del global_self_attr.x
 
-        _roundtrip_test(global_self_attr, test)
+        _roundtrip_test(self, global_self_attr, test)
 
     def test_defaults_lambda(self):
         def test(f):
@@ -175,7 +187,7 @@ class TestRecursiveFunctions(unittest.TestCase):
         default_g['f'] = recursive_defaults
         default_h['f'] = recursive_defaults
 
-        _roundtrip_test(recursive_defaults, test)
+        _roundtrip_test(self, recursive_defaults, test)
 
         default_g = {}
         default_h = {}
@@ -184,9 +196,9 @@ class TestRecursiveFunctions(unittest.TestCase):
         default_g['f'] = recursive_defaults
         default_h['f'] = recursive_defaults
 
-        _roundtrip_test(recursive_defaults, test)
+        _roundtrip_test(self, recursive_defaults, test)
 
-        _roundtrip_test(global_recursive_defaults, test)
+        _roundtrip_test(self, global_recursive_defaults, test)
 
     def test_attrs_lambda(self):
         def test(f):
@@ -195,10 +207,10 @@ class TestRecursiveFunctions(unittest.TestCase):
 
         recursive_attrs = lambda: None
         recursive_attrs.self = recursive_attrs
-        _roundtrip_test(recursive_attrs, test)
+        _roundtrip_test(self, recursive_attrs, test)
 
         def recursive_attrs(): pass
         recursive_attrs.self = recursive_attrs
-        _roundtrip_test(recursive_attrs, test)
+        _roundtrip_test(self, recursive_attrs, test)
 
-        _roundtrip_test(global_recursive_attrs, test)
+        _roundtrip_test(self, global_recursive_attrs, test)

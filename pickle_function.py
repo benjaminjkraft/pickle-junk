@@ -36,6 +36,15 @@ _CODE_ATTRS = (
 assert set(_CODE_ATTRS) == {attr for attr in dir(types.CodeType)
                             if attr.startswith('co_')}
 
+# These are the attrs of types.FuncType that aren't arguments to the
+# constructor (they are mutable and we copy them separately).
+_FUNC_ATTRS = (
+    '__dict__',
+    '__kwdefaults__',
+    '__module__',
+    '__qualname__',
+)
+
 
 class Pickler(pickle._Pickler):
     """A pickler that can save lambdas, inline functions, and other garbage.
@@ -187,13 +196,21 @@ class Pickler(pickle._Pickler):
             # chances that some weird object somewhere in the codebase crashes
             # us.
             # TODO: revisit once we can pickle modules and such.
-            globals_dict = {k: v for k, v in obj.__globals__.items()
+            globals_dict = {
+                k: v for k, v in obj.__globals__.items()
+                            if k in co_names
                             # co_names can also refer to a name from
-                            # __builtins__, so we need to save that too.
-                            # Luckily even normal-pickle knows how to pickle
-                            # everything that's normally there, so we don't
-                            # bother to filter.
-                            if k in co_names or k == '__builtins__'}
+                            # __builtins__, which is the builtins module's
+                            # dict, so we need to save that too.  Luckily even
+                            # normal-pickle knows how to pickle everything
+                            # that's normally there, so we don't bother to
+                            # filter.
+                            # But if we are in __main__, __builtins__ is the
+                            # actual module, not its dict [1], in which case we
+                            # don't want to do that (although maybe we can once
+                            # we know how to pickle modules).
+                            # [1] https://docs.python.org/3/reference/executionmodel.html#builtins-and-restricted-execution   # noqa:L501
+                            or k == '__builtins__' and isinstance(v, dict)}
             self.function_globals[id(obj)] = globals_dict
 
         self._save_global_name('types.FunctionType')
@@ -211,12 +228,8 @@ class Pickler(pickle._Pickler):
         self.write(pickle.REDUCE)
         self.memoize(obj)
 
-        # Fix up __kwdefaults__ and __dict__, which aren't available in the
-        # constructor (and are mutable).
-        self._setattrs({
-            '__kwdefaults__': obj.__kwdefaults__,
-            '__dict__': obj.__dict__,
-        })
+        # Fix up mutable args that aren't in the constructor.
+        self._setattrs({k: getattr(obj, k) for k in _FUNC_ATTRS})
 
     dispatch[types.FunctionType] = save_function
 
