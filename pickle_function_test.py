@@ -10,11 +10,33 @@ import pickle_function
 # - pickle some actual real functions
 
 
+def _roundtrip(val):
+    pickled = pickle_function.dumps(val)
+    # use _loads (the python implementation) for better stacktraces
+    return pickle._loads(pickled)
+
+
 ONE = 1
 
 
 def add_one(n):
     return n + ONE
+
+
+class TestSimpleFunction(unittest.TestCase):
+    def test_simple_lambda(self):
+        f = lambda n: n + 1
+        f_again = _roundtrip(f)
+        self.assertEqual(f_again(1), 2)
+
+    def test_simple_inline_def(self):
+        def f(n): return n + 1
+        f_again = _roundtrip(f)
+        self.assertEqual(f_again(1), 2)
+
+    def test_simple_global_def(self):
+        add_one_again = _roundtrip(add_one)
+        self.assertEqual(add_one_again(1), 2)
 
 
 def factorial(n):
@@ -31,40 +53,21 @@ def self_attr(n):
     return self_attr(0)
 
 
-class TestPicklingFunctions(unittest.TestCase):
-    def _roundtrip(self, val):
-        pickled = pickle_function.dumps(val)
-        # use _loads (the python implementation) for better stacktraces
-        return pickle._loads(pickled)
-
-    def test_simple_lambda(self):
-        f = lambda n: n + 1
-        f_again = self._roundtrip(f)
-        self.assertEqual(f_again(1), 2)
-
-    def test_simple_inline_def(self):
-        def f(n): return n + 1
-        f_again = self._roundtrip(f)
-        self.assertEqual(f_again(1), 2)
-
-    def test_simple_global_def(self):
-        add_one_again = self._roundtrip(add_one)
-        self.assertEqual(add_one_again(1), 2)
-
+class TestRecursiveFunctions(unittest.TestCase):
     def test_recursive_lambda(self):
         f = lambda n: n * f(n - 1) if n > 0 else 1
-        f_again = self._roundtrip(f)
+        f_again = _roundtrip(f)
         self.assertEqual(f_again(1), 1)
         self.assertEqual(f_again(4), 24)
 
     def test_recursive_inline_def(self):
         def f(n): return n * f(n - 1) if n > 0 else 1
-        f_again = self._roundtrip(f)
+        f_again = _roundtrip(f)
         self.assertEqual(f_again(1), 1)
         self.assertEqual(f_again(4), 24)
 
     def test_recursive_global_def(self):
-        factorial_again = self._roundtrip(factorial)
+        factorial_again = _roundtrip(factorial)
         self.assertEqual(factorial_again(1), 1)
         self.assertEqual(factorial_again(4), 24)
 
@@ -84,7 +87,7 @@ class TestPicklingFunctions(unittest.TestCase):
                 getattr(self_attr, 'x', None)
             ))
 
-        self_attr_again = self._roundtrip(self_attr)
+        self_attr_again = _roundtrip(self_attr)
         self.assertEqual(self_attr_again(1), 2)
         self.assertEqual(self_attr_again(5), 2)
 
@@ -96,14 +99,14 @@ class TestPicklingFunctions(unittest.TestCase):
             self_attr.x = n + 1
             return self_attr(0)
 
-        self_attr_again = self._roundtrip(self_attr)
+        self_attr_again = _roundtrip(self_attr)
         self.assertEqual(self_attr_again(1), 2)
         self.assertEqual(self_attr_again(5), 2)
 
     def test_recursive_identity_global_def(self):
         if hasattr(self_attr, 'x'):
             del self_attr.x
-        self_attr_again = self._roundtrip(self_attr)
+        self_attr_again = _roundtrip(self_attr)
         self.assertEqual(self_attr_again(1), 2)
         self.assertEqual(self_attr_again(5), 2)
 
