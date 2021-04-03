@@ -53,6 +53,10 @@ class Pickler(pickle._Pickler):
 
     dispatch = pickle._Pickler.dispatch.copy()
 
+    def _get_obj(self, obj):
+        """Write the opcodes to get obj from the memo."""
+        self.write(self.get(self.memo[id(obj)][0]))
+
     def save_function(self, obj):
         """An improved version of save_global that can save functions.
 
@@ -97,10 +101,16 @@ class Pickler(pickle._Pickler):
         #
         # For more on all this recursive stuff, see also the comments starting
         # "Subtle." in stdlib's save_tuple.
+        #
+        # Note: defaults cannot themselves be recursive, because they're
+        # evaluated at definition-time.  They can be indirectly recursive, if
+        # they are mutable, but mutable objects all know how to break the cycle
+        # (see e.g. upstream's save_dict).
         self.save((obj.__code__, globals_dict, obj.__name__,
                    obj.__defaults__, obj.__closure__))
         # We also need to early-out for non-module-scope recursive functions
-        # (where the self-reference is in obj.__closure__); in that case the
+        # (where the self-reference is in obj.__closure__; or in
+        # obj.__defaults__ for recursive defaults); in that case the
         # cycle gets broken in save_cell, so we have already been pickled by
         # the time we get there.  So instead of proceeding, we need to pop this
         # tuple, and return that.
@@ -111,22 +121,27 @@ class Pickler(pickle._Pickler):
 
         # Now build the function itself.
         self.write(pickle.REDUCE)
-        # TODO: need to fix up __kwdefaults__ and potentially __dict__ -- can
-        # probably just call _batch_setitems.
         self.memoize(obj)
 
+        # Fix up __kwdefaults__ and __dict__, which aren't available in the
+        # constructor.  (These can be recursive too, but since we've already
+        # written the function, that's a non-issue.)
+        self._setattrs({
+            '__kwdefaults__': obj.__kwdefaults__,
+            '__dict__': obj.__dict__,
+        })
+
         # Finally, we have to find the globals in the memo, and fix them up.
-        self.write(self.get(self.memo[id(globals_dict)][0]))
+        self._get_obj(globals_dict)
         # Only pickle globals we actually need, to save size and reduce the
         # chances that some weird object somewhere in the codebase crashes us.
-        relevant_globals = {k: v for k, v in obj.__globals__.items()
-                            # co_names can also refer to a name from
-                            # __builtins__, so we need to save that too.
-                            # Luckily even normal-pickle knows how to pickle
-                            # everything that's normally there, so we don't
-                            # bother to filter.
-                            if k in co_names or k == '__builtins__'}
-        self._batch_setitems(relevant_globals.items())
+        self._batch_setitems([(k, v) for k, v in obj.__globals__.items()
+                              # co_names can also refer to a name from
+                              # __builtins__, so we need to save that too.
+                              # Luckily even normal-pickle knows how to pickle
+                              # everything that's normally there, so we don't
+                              # bother to filter.
+                              if k in co_names or k == '__builtins__'])
         # Get the function back on top of the stack.
         self.write(pickle.POP)
 
@@ -158,6 +173,20 @@ class Pickler(pickle._Pickler):
 
     dispatch[types.CodeType] = save_code
 
+    def _setattrs(self, d):
+        """Set all attrs in the dict d on the object on top of the stack.
+
+        This writes opcodes roughly equivalent to `obj.__dict__.update(d)`,
+        except they work right for slots.
+        """
+        # Normally, BUILD takes a dict, state, and does basically
+        #   obj.__dict__.update(state)
+        # But to handle __slots__, it also allows a pair (state, slotstate),
+        # and does setattrs for the elements of slotstate.  We just do that
+        # always because it's easier than figuring out which one is right.
+        self.save((None, d))
+        self.write(pickle.BUILD)
+
     def save_cell(self, obj, name=None):
         """A saver for types.CellType, which is used for closures.
 
@@ -180,12 +209,7 @@ class Pickler(pickle._Pickler):
         self.write(pickle.REDUCE)
         self.memoize(obj)
 
-        # Normally, BUILD takes a dict, state, and does basically
-        #   obj.__dict__.udpate(state)
-        # But to handle __slots__, it also allows a pair (state, slotstate),
-        # and does setattrs for the elements of slotstate.
-        self.save((None, {'cell_contents': obj.cell_contents}))
-        self.write(pickle.BUILD)
+        self._setattrs({'cell_contents': obj.cell_contents})
 
     dispatch[types.CellType] = save_cell
 
