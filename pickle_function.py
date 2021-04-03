@@ -38,7 +38,95 @@ assert set(_CODE_ATTRS) == {attr for attr in dir(types.CodeType)
 
 
 class Pickler(pickle._Pickler):
-    """A pickler that can save lambdas, inline functions, and other garbage."""
+    """A pickler that can save lambdas, inline functions, and other garbage.
+
+    GENERAL NOTE: Lots of the things we pickle can be recursive, which requires
+    some care to handle.  In general, pickling an object looks like:
+    0. check if the object is in the memo, and if so use that
+    1. pickle the object's members/args/items/...
+    2. build the object from them, put it in the memo
+    Whenever an object (directly or indirectly) may reference itself, we need
+    to do one of two things:
+    A. In between steps 1 and 2, repeat step 0, in case step 1 indirectly
+       pickled the object.  (Additionally before we use the object in the memo,
+       we need to pop whatever we added in step 1.)
+    B. Instead of steps 1 and 2, do:
+       1. build an empty object, put it in the memo
+       2. pickle the object's members/items/...
+       3. set those members/items/... on the object
+
+    Now, B is not always possible, if the object is immutable, or some of the
+    arguments/... are needed at init-time.  But A is insufficient on its own:
+    we need to do B for *some* object that participates in the cycle, because
+    otherwise step 1 is already infinitely recursive, and we never even get to
+    the second version of step 0.  (As long as there's a B somewhere, its step
+    2 will not be infinitely recursive, since that object is already in the
+    memo.)
+
+    Luckily, we can always solve those constraints, by just doing A whenever
+    necessary and B everywhere else.  We can't have a cycle only among
+    immutable objects (or those arguments/attrs needed at init-time) because
+    it's impossible to create, so there must be some mutable object (or attr)
+    that will use B.
+
+    So, for example, if you have a recursive non-module-scoped function, then
+    we have a cycle like:
+        f.__closure__ = (types.CellType(cell_contents=f),)
+    Now f.__closure__ is an immutable attribute of f; and f.__closure__ is
+    itself a tuple (thus immutable), but cells are mutable -- and they need to
+    be, exactly so that it's possible to write this function!  So we can do
+    option A above for functions (except see below) and tuples, but do option B
+    for cells.  Then when pickling f, we will:
+    0. check if f is in the memo; it's not
+    1. pickle f's closure (and other attrs, omitted for simplicity):
+        0. check if f.__closure__ is in the memo; it's not
+        1. pickle f.__closure__'s item:
+            0. check if f.__closure__[0] is in the memo; it's not
+            1. create an empty cell, put it in the memo
+            2. pickle the cell's member, f:
+                0. check if f is in the memo; it's not
+                1. pickle f's closure (and other attrs, omitted):
+                    0. check if f.__closure__ is in the memo; it's not
+                    1. pickle f.__closure__'s item, a cell:
+                        0. check if f.__closure__[0] is in the memo; it is!
+                           so return it.
+                    0. check, again, if f.__closure__ is in the memo; it's not
+                    2. build f.__closure__ from its items
+                0. check, again, if f is in the memo; it's not
+                2. build f from its closure (and other attrs)
+            3. set f.cell_contents = f
+        0. check, again, if f.__closure__ is in the memo; this time it is!
+           so return it.
+    0. check, again, if f is in the memo; this time it is!  so return it.
+
+    Note that if we didn't do A with f or f.__closure__, we'd mostly not
+    overflow the stack.  But we'd end up with two copies of f floating around.
+    And if we didn't do B with the cell, we'd recurse infinitely before putting
+    anything in the memo!
+
+    Note also that in reality, some types, like functions, have a mix of
+    mutable and immutable attributes; for example f.__closure__ is read-only
+    after creation, but f.__kwdefaults__ can be set later.  So in such cases we
+    we do some of both: we pickle the immutable attributes, check if we've
+    pickled f, build f with just the immutable attributes, add it to the memo,
+    then pickle and set the mutable attributes.
+
+    See also the comments starting "Subtle." in stdlib's save_tuple.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # We keep a global map of function -> its globals-map, so that when we
+        # pickle recursive functions the object-identity works right w/r/t the
+        # pickled version's globals map.  This is necessary because we don't
+        # actually pickle all of f.__globals__, just the parts f is likely to
+        # need.
+        # TODO: once we can pickle modules, revisit that; maybe we should just
+        # pickle all of it, in which case we can probably back this out.  That
+        # would make for very large pickles, but would also make code that
+        # looks at `globals()` work right.  Or, we could look at depickling in
+        # caller's globals.  It's not clear to me which is more correct.
+        self.function_globals = {}
+
     def _save_global_name(self, name):
         """Saves the global with the given name.
 
@@ -92,28 +180,28 @@ class Pickler(pickle._Pickler):
             self.write(self.get(memoed[0]))
             return
 
-        self._save_global_name('types.FunctionType')
         co_names = set(obj.__code__.co_names)
-        globals_dict = {}
-        # To handle recursive functions at module scope (where f's
-        # implementation gets f from f.__globals__), we need to do a similar
-        # trick to the one with cells below (see save_cell).
-        #
-        # For more on all this recursive stuff, see also the comments starting
-        # "Subtle." in stdlib's save_tuple.
-        #
-        # Note: defaults cannot themselves be recursive, because they're
-        # evaluated at definition-time.  They can be indirectly recursive, if
-        # they are mutable, but mutable objects all know how to break the cycle
-        # (see e.g. upstream's save_dict).
+        globals_dict = self.function_globals.get(id(obj))
+        if globals_dict is None:
+            # Only pickle globals we actually need, to save size and reduce the
+            # chances that some weird object somewhere in the codebase crashes
+            # us.
+            # TODO: revisit once we can pickle modules and such.
+            globals_dict = {k: v for k, v in obj.__globals__.items()
+                            # co_names can also refer to a name from
+                            # __builtins__, so we need to save that too.
+                            # Luckily even normal-pickle knows how to pickle
+                            # everything that's normally there, so we don't
+                            # bother to filter.
+                            if k in co_names or k == '__builtins__'}
+            self.function_globals[id(obj)] = globals_dict
+
+        self._save_global_name('types.FunctionType')
         self.save((obj.__code__, globals_dict, obj.__name__,
                    obj.__defaults__, obj.__closure__))
-        # We also need to early-out for non-module-scope recursive functions
-        # (where the self-reference is in obj.__closure__; or in
-        # obj.__defaults__ for recursive defaults); in that case the
-        # cycle gets broken in save_cell, so we have already been pickled by
-        # the time we get there.  So instead of proceeding, we need to pop this
-        # tuple, and return that.
+        # Handle recursive functions (we can have self-references via
+        # __globals__, __closure__, or via the items of __defaults__).
+        # See module docstring for more.
         memoed = self.memo.get(id(obj))
         if memoed is not None:
             self.write(pickle.POP + self.get(memoed[0]))
@@ -124,26 +212,11 @@ class Pickler(pickle._Pickler):
         self.memoize(obj)
 
         # Fix up __kwdefaults__ and __dict__, which aren't available in the
-        # constructor.  (These can be recursive too, but since we've already
-        # written the function, that's a non-issue.)
+        # constructor (and are mutable).
         self._setattrs({
             '__kwdefaults__': obj.__kwdefaults__,
             '__dict__': obj.__dict__,
         })
-
-        # Finally, we have to find the globals in the memo, and fix them up.
-        self._get_obj(globals_dict)
-        # Only pickle globals we actually need, to save size and reduce the
-        # chances that some weird object somewhere in the codebase crashes us.
-        self._batch_setitems([(k, v) for k, v in obj.__globals__.items()
-                              # co_names can also refer to a name from
-                              # __builtins__, so we need to save that too.
-                              # Luckily even normal-pickle knows how to pickle
-                              # everything that's normally there, so we don't
-                              # bother to filter.
-                              if k in co_names or k == '__builtins__'])
-        # Get the function back on top of the stack.
-        self.write(pickle.POP)
 
     dispatch[types.FunctionType] = save_function
 
@@ -160,13 +233,12 @@ class Pickler(pickle._Pickler):
         self._save_global_name('types.CodeType')
         self.save(tuple(getattr(obj, attr) for attr in _CODE_ATTRS))
 
-        # Same case with recursive functions as in save_function.
-        # TODO: is this actually necessary?  maybe to get code-object identity
-        # right, not that it really matters?
-        memoed = self.memo.get(id(obj))
-        if memoed is not None:
-            self.write(pickle.POP + self.get(memoed[0]))
-            return
+        # TODO: can anything in a code-type be recursive?  It doesn't seem like
+        # it but it's hard to be sure.
+        # memoed = self.memo.get(id(obj))
+        # if memoed is not None:
+        #     self.write(pickle.POP + self.get(memoed[0]))
+        #     return
 
         self.write(pickle.REDUCE)
         self.memoize(obj)
@@ -199,11 +271,8 @@ class Pickler(pickle._Pickler):
             self.write(self.get(memoed[0]))
             return
 
-        # To make recursive functions not at module scope work, we need to
-        # break the recursive cycle somewhere.  (For module-scoped functions,
-        # it gets broken when we serialize the globals dict, I think.)  For
-        # recursion via closures, this is that somewhere, because cells are
-        # nice and mutable!  So we init the cell, and set its contents later.
+        # Handle recursive functions; this is where we break the cycle (see
+        # module doc, where this is option B).
         self._save_global_name('types.CellType')
         self.save(())
         self.write(pickle.REDUCE)
