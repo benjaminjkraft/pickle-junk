@@ -11,7 +11,9 @@ import types
 # TODO:
 # - generators, coroutines, async generators (?)
 # - classes
-#   - metaclasses
+#   - custom __prepare__ or metaclass arguments (is this even
+#     possible to handle right?)
+#   - check we don't break __reduce__
 #   - various types of methods
 #   - classes with __slots__
 # - modules
@@ -376,19 +378,44 @@ class Pickler(pickle._Pickler):
 
     dispatch[types.CellType] = save_cell
 
-    def save_type(self, cls):
-        """An "improved" version of save_global that can save (most) types.
+    def save_global(self, obj, name=None):
+        """Wires up save_type.
 
-        "Type" here means "user-defined class", more or less.
-
-        Like save_function, this has to hook in to the internal dispatch.
-        TODO: Could probably share code with save_function if we abstract the
-        attr-lists.
+        You might expect that we would wire up save_type like upstream does,
+        and like we do for save_function, namely:
+            dispatch[type] = save_type
+        But this doesn't work for types with (nontrivial) metaclasses: we'd end
+        up looking for `dispatch[<metaclass>]` which is of course not set.
+        Luckily, upstream already checks for this case in save(), and calls
+        directly to save_global for objects whose type isn't in dispatch but
+        inherits from type.  We want to apply our usual nonsense to that call,
+        so we override save_global to do that.
         """
-        # TODO: flag to try/except this for all types:
-        if _type_is_C(cls):
-            return self.save_global(cls)
+        cls = type(obj)
+        if name is not None:
+            # __reduce__ can return a string, which means, "save me as this
+            # global name"; respect that by delegating to upstream.
+            super().save_global(obj, name)
+        elif issubclass(cls, type):
+            # TODO: flag to try/except this for all types:
+            if _type_is_C(obj):
+                # C types we give up and save as globals.  (I mean, we could
+                # try to serialize the .so, but, even more yikes.)
+                return super().save_global(obj)
+            # Else, do our magic.
+            self._save_type(obj)
+        else:
+            # (Should never happen, unless upstream changed.)
+            raise pickle.PicklingError(
+                "Unexpected type passed to save_global: %s" % cls)
 
+    def _save_type(self, cls):
+        """Saves a user-defined type.
+
+        This is generally like save_function.  We don't bother wiring it in as
+        dispatch[type] because upstream's save_type basically just calls
+        save_global, which we need to override to call us anyway.
+        """
         memoed = self.memo.get(id(cls))
         if memoed is not None:
             self.write(self.get(memoed[0]))
@@ -405,7 +432,12 @@ class Pickler(pickle._Pickler):
                  if k not in ('__dict__', '__weakref__')})
 
         # Now save the class, similar to functions.
-        self._save_global_name('builtins.type')
+        if type(cls) is type:
+            # Normally the constructor is type.
+            self._save_global_name('builtins.type')
+        else:
+            # But if you have a metaclass, that's the constructor.
+            self._save_type(type(cls))
         self.save(args)
         # Handle recursive classes:
         memoed = self.memo.get(id(cls))
@@ -415,8 +447,6 @@ class Pickler(pickle._Pickler):
         self.write(pickle.REDUCE)
         self.memoize(cls)
         self._setattrs({k: getattr(cls, k) for k in _TYPE_ATTRS})
-
-    dispatch[type] = save_type
 
 
 def dumps(obj, protocol=None, *, fix_imports=True):

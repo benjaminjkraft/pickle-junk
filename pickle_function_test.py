@@ -1,4 +1,5 @@
 # flake8: noqa  # we do lots of weird things to test them!
+import itertools
 import pickle
 import re
 import unittest
@@ -43,13 +44,16 @@ def _simple_roundtrip_test(testcase, val):
 
 class TestBuiltins(unittest.TestCase):
     def test_basic(self):
-        _simple_roundtrip_test(self, 1)
-        _simple_roundtrip_test(self, 2 ** 1000)
-        _simple_roundtrip_test(self, 1.2e34)
-        _simple_roundtrip_test(self, 'str')
-        _simple_roundtrip_test(self, b'bytes')
-        _simple_roundtrip_test(self, None)
-        _simple_roundtrip_test(self, True)
+        for val in [
+                1, 2 ** 1000, 1.2e34,
+                'str', b'bytes',
+                None, True, NotImplemented, ...,
+                Exception("hello"),
+                object,
+        ]:
+            _simple_roundtrip_test(self, val)
+            _simple_roundtrip_test(self, type(val))
+
 
     def test_list(self):
         _simple_roundtrip_test(self, [1, [], [2, [3]]])
@@ -305,6 +309,11 @@ class SimpleGlobalClass:
         return 3
 
 
+class GlobalMetaclass(type): pass
+class GlobalBaseClass(metaclass=GlobalMetaclass): pass
+class GlobalFancyClass(GlobalBaseClass): pass
+
+
 class TestClasses(unittest.TestCase):
     class SimpleClassLevelClass:
         """A good class."""
@@ -316,6 +325,10 @@ class TestClasses(unittest.TestCase):
 
         def method(self):
             return 3
+
+    class ClassLevelMetaclass(type): pass
+    class ClassLevelBaseClass(metaclass=ClassLevelMetaclass): pass
+    class ClassLevelFancyClass(ClassLevelBaseClass): pass
 
     def test_simple(self):
         def test(c):
@@ -339,3 +352,37 @@ class TestClasses(unittest.TestCase):
         _roundtrip_test(self, SimpleLocalClass, test)
         _roundtrip_test(self, self.SimpleClassLevelClass, test)
         _roundtrip_test(self, SimpleGlobalClass, test)
+
+    def test_fancy(self):
+        def make_test(expected):
+            def test(actual):
+                e = expected
+                a = actual
+                for i in itertools.count():
+                    wrapper = "type(" * i + "%s" + ")" * i
+                    err = ("expected %s to be %s, but got %s = %s" % (
+                        wrapper % expected, e, wrapper % actual, a))
+                    if e is type:
+                        self.assertEqual(a, type, err)
+                        break
+                    self.assertEqual(e.__name__, a.__name__, err)
+                    e = type(e)
+                    a = type(a)
+            return test
+
+        class LocalMetaclass(type): pass
+        class LocalBaseClass(metaclass=LocalMetaclass): pass
+        class LocalFancyClass(LocalBaseClass): pass
+
+        for cls in [
+                GlobalMetaclass,
+                GlobalBaseClass,
+                GlobalFancyClass,
+                self.ClassLevelMetaclass,
+                self.ClassLevelBaseClass,
+                self.ClassLevelFancyClass,
+                LocalMetaclass,
+                LocalBaseClass,
+                LocalFancyClass,
+        ]:
+            _roundtrip_test(self, cls, make_test(cls))
