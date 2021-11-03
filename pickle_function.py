@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 # Tested in Python 3.9.  This uses a lot of internals, so it may break in
 # earlier or later versions!
+import importlib.machinery
 import io
 import pickle
+import sys
 import types
 
 
 # TODO:
-# - generators, coroutines, async generators
+# - generators, coroutines, async generators (?)
 # - classes
 #   - metaclasses
 #   - various types of methods
+#   - classes with __slots__
 # - modules
 #   - do we need to handle __loader__, __package__, __spec__?
 # - fuzz-test by pickling real modules/functions/etc.
@@ -61,6 +64,66 @@ _FUNC_ATTRS = {
     # [1] https://github.com/python/cpython/blob/cbfa09b70b745c9d7393c03955600f6d1cf019e3/Objects/funcobject.c#L56    # noqa:L501
     '__doc__',
 }
+
+# Like _FUNC_ATTRS, but for types.
+_TYPE_ATTRS = {
+    '__qualname__',
+    # Attributes you might think we need (e.g. from
+    # pickle_util.interesting_attrs) that we don't:
+    # Included in __dict__:
+    # '__doc__',
+    # '__module__',
+    # CPython implementation details, read-only:
+    # '__abstractmethods__',
+    # '__base__',
+    # '__basicsize__',
+    # '__dictoffset__',
+    # '__flags__',
+    # '__itemsize__',
+    # '__mro__',
+    # '__text_signature__',
+    # '__weakrefoffset__',
+    # Constructor arguments:
+    # '__bases__',
+    # '__dict__',
+    # '__name__',
+}
+
+
+
+def _type_is_C(cls):
+    """Return true if the type is defined in C.
+
+    Types (and functions) defined in C are some of the few truly unpicklable
+    objects!  At least, as yet....
+
+    For functions, it's easy to tell:
+        type(f) == types.FunctionType
+    means you're a Python function (builtins and C functions have type
+    types.BuiltinFunctionType or types.BuiltinMethodType or whatnot).  But for
+    classes, it's surprisingly hard.  We crib from this SO answer:
+        https://stackoverflow.com/a/60953150
+    """
+    modulename = cls.__module__
+    if modulename in (
+            # Don't try to get smart with builtins:
+            'builtins',
+            # Nor quasi-builtins:
+            '_frozen_importlib', '_sitebuiltins'):
+        return True
+    
+    module = sys.modules.get(modulename)
+    if not isinstance(module, types.ModuleType):
+        return True
+
+    if isinstance(getattr(module, '__loader__', None),
+                  importlib.machinery.ExtensionFileLoader):
+        return False
+
+    filename = getattr(module, '__file__', None)
+    if filename is None:
+        return True
+    return filename.endswith(tuple(importlib.machinery.EXTENSION_SUFFIXES))
 
 
 class Pickler(pickle._Pickler):
@@ -172,10 +235,7 @@ class Pickler(pickle._Pickler):
         self.write(self.get(self.memo[id(obj)][0]))
 
     def save_function(self, obj):
-        """An improved version of save_global that can save functions.
-
-        We delegate to ordinary save_global when we can, but then do our
-        garbage hackery when we can't.
+        """An "improved" version of save_global that can save functions.
 
         Note that this has to hook directly into dispatch, rather than the
         intended extension points like dispatch_table or copyreg, for two
@@ -315,6 +375,48 @@ class Pickler(pickle._Pickler):
         self._setattrs({'cell_contents': obj.cell_contents})
 
     dispatch[types.CellType] = save_cell
+
+    def save_type(self, cls):
+        """An "improved" version of save_global that can save (most) types.
+
+        "Type" here means "user-defined class", more or less.
+
+        Like save_function, this has to hook in to the internal dispatch.
+        TODO: Could probably share code with save_function if we abstract the
+        attr-lists.
+        """
+        # TODO: flag to try/except this for all types:
+        if _type_is_C(cls):
+            return self.save_global(cls)
+
+        memoed = self.memo.get(id(cls))
+        if memoed is not None:
+            self.write(self.get(memoed[0]))
+            return
+
+        # Else, we save the type as a call to type(name, bases, dict).  
+        # The arguments to type() are simple: type(name, bases, dict).  We'll
+        # fill in __dict__ specially below.
+        args = (cls.__name__, cls.__bases__,
+                # __dict__ and __weakref__ are a bit special (they're
+                # getset_descriptor clsects), and will get initialized just
+                # fine automagically, so omit them.
+                {k: v for k, v in cls.__dict__.items()
+                 if k not in ('__dict__', '__weakref__')})
+
+        # Now save the class, similar to functions.
+        self._save_global_name('builtins.type')
+        self.save(args)
+        # Handle recursive classes:
+        memoed = self.memo.get(id(cls))
+        if memoed is not None:
+            self.write(pickle.POP + self.get(memoed[0]))
+            return
+        self.write(pickle.REDUCE)
+        self.memoize(cls)
+        self._setattrs({k: getattr(cls, k) for k in _TYPE_ATTRS})
+
+    dispatch[type] = save_type
 
 
 def dumps(obj, protocol=None, *, fix_imports=True):

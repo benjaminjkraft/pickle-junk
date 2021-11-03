@@ -9,18 +9,6 @@ import pickle_function
 import pickle_util
 
 
-def _repr_without_address(val):
-    return re.sub(' at 0x[0-9a-f]+>$', '>', repr(val))
-
-
-def _roundtrip_test(testcase, val, assertion_func):
-    assertion_func(val)
-    val_again = pickle_util.roundtrip(val)
-    testcase.assertEqual(_repr_without_address(val),
-                         _repr_without_address(val_again))
-    assertion_func(val_again)
-
-
 class TestConsts(unittest.TestCase):
     def test_code_attrs(self):
         # We can't check that the order is correct (the constructor is in C so
@@ -34,6 +22,55 @@ class TestConsts(unittest.TestCase):
         self.assertEqual(
             set(pickle_function._FUNC_ARGS) | pickle_function._FUNC_ATTRS,
             pickle_util.interesting_attrs(types.FunctionType))
+
+
+def _repr_without_address(val):
+    return re.sub(' at 0x[0-9a-f]+>$', '>', repr(val))
+
+
+def _roundtrip_test(testcase, val, assertion_func):
+    assertion_func(val)
+    val_again = pickle_util.roundtrip(val)
+    testcase.assertEqual(_repr_without_address(val),
+                         _repr_without_address(val_again))
+    assertion_func(val_again)
+
+
+def _simple_roundtrip_test(testcase, val):
+    def test(val_again):
+        testcase.assertEqual(val, val_again)
+
+
+class TestBuiltins(unittest.TestCase):
+    def test_basic(self):
+        _simple_roundtrip_test(self, 1)
+        _simple_roundtrip_test(self, 2 ** 1000)
+        _simple_roundtrip_test(self, 1.2e34)
+        _simple_roundtrip_test(self, 'str')
+        _simple_roundtrip_test(self, b'bytes')
+        _simple_roundtrip_test(self, None)
+        _simple_roundtrip_test(self, True)
+
+    def test_list(self):
+        _simple_roundtrip_test(self, [1, [], [2, [3]]])
+
+        x = []
+        x.append(x)
+        _simple_roundtrip_test(self, x)
+
+    def test_tuple(self):
+        _simple_roundtrip_test(self, (1, 2, (3, 4)))
+
+    def test_dict(self):
+        _simple_roundtrip_test(self, {1: {2: {}, 3: {4: {5: 6}}}})
+
+        x = {}
+        x[1] = x
+        _simple_roundtrip_test(self, x)
+
+    def test_set(self):
+        _simple_roundtrip_test(
+            self, {frozenset([1, 2, frozenset([3, 4])]), 5})
 
 
 ONE = 1
@@ -254,3 +291,51 @@ class TestRecursiveFunctions(unittest.TestCase):
         _roundtrip_test(self, recursive_attrs, test)
 
         _roundtrip_test(self, global_recursive_attrs, test)
+
+
+class SimpleGlobalClass:
+    """A good class."""
+    CLASS_VAR = 1
+
+    def __init__(self, x):
+        self.init_arg = x
+        self.instance_var = 2
+
+    def method(self):
+        return 3
+
+
+class TestClasses(unittest.TestCase):
+    class SimpleClassLevelClass:
+        """A good class."""
+        CLASS_VAR = 1
+
+        def __init__(self, x):
+            self.init_arg = x
+            self.instance_var = 2
+
+        def method(self):
+            return 3
+
+    def test_simple(self):
+        def test(c):
+            self.assertEqual(c.CLASS_VAR, 1)
+            self.assertEqual(c(0).instance_var, 2)
+            self.assertEqual(c(0).method(), 3)
+            self.assertEqual(c(0).init_arg, 0)
+            self.assertEqual(c.__doc__, """A good class.""")
+
+        class SimpleLocalClass:
+            """A good class."""
+            CLASS_VAR = 1
+
+            def __init__(self, x):
+                self.init_arg = x
+                self.instance_var = 2
+
+            def method(self):
+                return 3
+
+        _roundtrip_test(self, SimpleLocalClass, test)
+        _roundtrip_test(self, self.SimpleClassLevelClass, test)
+        _roundtrip_test(self, SimpleGlobalClass, test)
