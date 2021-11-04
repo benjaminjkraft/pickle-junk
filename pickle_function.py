@@ -12,6 +12,11 @@ import types
 # - modules
 #   - do we need to handle __loader__, __package__, __spec__?
 # - fuzz-test by pickling real modules/functions/etc.
+# - blog post:
+#   - intro/problem-statement
+#   - what is a function, and the basic (non-recursive/ignoring globals) method
+#   - recursion is a mess
+#   - don't use this (but read the code)
 #
 # Open problems:
 # - generators, async generators, and coroutines -- unclear if it's possible to
