@@ -8,16 +8,15 @@ import sys
 import types
 
 
-# TODO:
-# - generators, coroutines, async generators (?)
-# - classes
-#   - custom __prepare__ or metaclass arguments (is this even
-#     possible to handle right?)
-#   - check we don't break __reduce__
-#   - classes with __slots__
+# known-ish TODO:
 # - modules
 #   - do we need to handle __loader__, __package__, __spec__?
 # - fuzz-test by pickling real modules/functions/etc.
+#
+# Open problems:
+# - generators, async generators, and coroutines -- unclear if it's possible to
+#   init from Python; maybe make an iterable that fakes them (sad)?
+# - custom __prepare__ or metaclass arguments
 
 
 # Arguments (in order) to the types.CodeType constructor.  See also
@@ -376,10 +375,13 @@ class Pickler(pickle._Pickler):
         # fill in __dict__ specially below.
         args = (cls.__name__, cls.__bases__,
                 # __dict__ and __weakref__ are a bit special (they're
-                # getset_descriptor clsects), and will get initialized just
-                # fine automagically, so omit them.
+                # getset_descriptor objects), and will get initialized just
+                # fine automagically, so omit them to avoid infinite recursion
+                # or other strange nonsense.  Similarly any attr in __slots__
+                # is a member_descriptor.
                 {k: v for k, v in cls.__dict__.items()
-                 if k not in ('__dict__', '__weakref__')})
+                 if k not in ('__dict__', '__weakref__')
+                 + getattr(cls, '__slots__', ())})
 
         # Now save the class, similar to functions.
         if type(cls) is type:

@@ -344,6 +344,26 @@ class GlobalMetaclass(type): pass
 class GlobalBaseClass(metaclass=GlobalMetaclass): pass
 class GlobalFancyClass(GlobalBaseClass): pass
 
+class GlobalSlotsClass:
+    __slots__ = ('myslot',)
+
+    def __init__(self, val):
+        self.myslot = val
+
+
+class GlobalReduceClass:
+    def __init__(self):
+        self.times_pickled = 0
+
+    @classmethod
+    def _load(cls, times_pickled):
+        self = cls()
+        self.times_pickled = times_pickled
+        return self
+
+    def __reduce__(self):
+        return (self._load, (self.times_pickled + 1,))
+
 
 class TestClasses(unittest.TestCase):
     class SimpleClassLevelClass:
@@ -390,6 +410,25 @@ class TestClasses(unittest.TestCase):
     class ClassLevelMetaclass(type): pass
     class ClassLevelBaseClass(metaclass=ClassLevelMetaclass): pass
     class ClassLevelFancyClass(ClassLevelBaseClass): pass
+
+    class ClassLevelSlotsClass:
+        __slots__ = ('myslot',)
+
+        def __init__(self, val):
+            self.myslot = val
+
+    class ClassLevelReduceClass:
+        def __init__(self):
+            self.times_pickled = 0
+
+        @classmethod
+        def _load(cls, times_pickled):
+            self = cls()
+            self.times_pickled = times_pickled
+            return self
+
+        def __reduce__(self):
+            return (self._load, (self.times_pickled + 1,))
 
     def test_simple(self):
         def test(c):
@@ -499,3 +538,46 @@ class TestClasses(unittest.TestCase):
                 LocalFancyClass,
         ]:
             _roundtrip_test(self, cls, make_test(cls))
+
+    def test_slots(self):
+        def testcls(c):
+            self.assertEqual(c.__slots__, ('myslot',))
+        def testinst(v):
+            self.assertEqual(v.myslot, 1)
+
+        class LocalSlotsClass:
+            __slots__ = ('myslot',)
+
+            def __init__(self, val):
+                self.myslot = val
+
+        _roundtrip_test(self, GlobalSlotsClass, testcls)
+        _roundtrip_test(self, GlobalSlotsClass(1), testinst)
+        _roundtrip_test(self, self.ClassLevelSlotsClass, testcls)
+        _roundtrip_test(self, self.ClassLevelSlotsClass(1), testinst)
+        _roundtrip_test(self, LocalSlotsClass, testcls)
+        _roundtrip_test(self, LocalSlotsClass(1), testinst)
+
+    def test_reduce_class(self):
+        def test(cls):
+            v = cls()
+            for i in range(3):
+                self.assertEqual(v.times_pickled, i)
+                v = pickle_util.roundtrip(v)
+
+        class LocalReduceClass:
+            def __init__(self):
+                self.times_pickled = 0
+
+            @classmethod
+            def _load(cls, times_pickled):
+                self = cls()
+                self.times_pickled = times_pickled
+                return self
+
+            def __reduce__(self):
+                return (self._load, (self.times_pickled + 1,))
+
+        test(GlobalReduceClass)
+        test(self.ClassLevelReduceClass)
+        test(LocalReduceClass)
