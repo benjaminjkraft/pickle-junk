@@ -14,7 +14,6 @@ import types
 #   - custom __prepare__ or metaclass arguments (is this even
 #     possible to handle right?)
 #   - check we don't break __reduce__
-#   - various types of methods
 #   - classes with __slots__
 # - modules
 #   - do we need to handle __loader__, __package__, __spec__?
@@ -90,7 +89,6 @@ _TYPE_ATTRS = {
     # '__dict__',
     # '__name__',
 }
-
 
 
 def _type_is_C(cls):
@@ -230,6 +228,20 @@ class Pickler(pickle._Pickler):
         self.save(name)
         self.write(pickle.STACK_GLOBAL)
 
+    def _setattrs(self, d):
+        """Set all attrs in the dict d on the object on top of the stack.
+
+        This writes opcodes roughly equivalent to `obj.__dict__.update(d)`,
+        except they work right for slots.
+        """
+        # Normally, BUILD takes a dict, state, and does basically
+        #   obj.__dict__.update(state)
+        # But to handle __slots__, it also allows a pair (state, slotstate),
+        # and does setattrs for the elements of slotstate.  We just do that
+        # always because it's easier than figuring out which one is right.
+        self.save((None, d))
+        self.write(pickle.BUILD)
+
     dispatch = pickle._Pickler.dispatch.copy()
 
     def _get_obj(self, obj):
@@ -301,7 +313,7 @@ class Pickler(pickle._Pickler):
         self.save(tuple(args))
         # Handle recursive functions (we can have self-references via
         # __globals__, __closure__, or via the items of __defaults__).
-        # See module docstring for more.
+        # See class docstring for more.
         memoed = self.memo.get(id(obj))
         if memoed is not None:
             self.write(pickle.POP + self.get(memoed[0]))
@@ -315,68 +327,6 @@ class Pickler(pickle._Pickler):
         self._setattrs({k: getattr(obj, k) for k in _FUNC_ATTRS})
 
     dispatch[types.FunctionType] = save_function
-
-    def save_code(self, obj, name=None):
-        """A saver for types.CodeType, which is the function's code.
-
-        Like save_function, this has to hook in to the internal dispatch.
-        """
-        memoed = self.memo.get(id(obj))
-        if memoed is not None:
-            self.write(self.get(memoed[0]))
-            return
-
-        self._save_global_name('types.CodeType')
-        self.save(tuple(getattr(obj, attr) for attr in _CODE_ARGS))
-
-        # TODO: can anything in a code-type be recursive?  It doesn't seem like
-        # it but it's hard to be sure.
-        # memoed = self.memo.get(id(obj))
-        # if memoed is not None:
-        #     self.write(pickle.POP + self.get(memoed[0]))
-        #     return
-
-        self.write(pickle.REDUCE)
-        self.memoize(obj)
-
-    dispatch[types.CodeType] = save_code
-
-    def _setattrs(self, d):
-        """Set all attrs in the dict d on the object on top of the stack.
-
-        This writes opcodes roughly equivalent to `obj.__dict__.update(d)`,
-        except they work right for slots.
-        """
-        # Normally, BUILD takes a dict, state, and does basically
-        #   obj.__dict__.update(state)
-        # But to handle __slots__, it also allows a pair (state, slotstate),
-        # and does setattrs for the elements of slotstate.  We just do that
-        # always because it's easier than figuring out which one is right.
-        self.save((None, d))
-        self.write(pickle.BUILD)
-
-    def save_cell(self, obj, name=None):
-        """A saver for types.CellType, which is used for closures.
-
-        Specifically, this is the type of elements of func.__closure__.
-
-        Like save_function, this has to hook in to the internal dispatch.
-        """
-        memoed = self.memo.get(id(obj))
-        if memoed is not None:
-            self.write(self.get(memoed[0]))
-            return
-
-        # Handle recursive functions; this is where we break the cycle (see
-        # module doc, where this is option B).
-        self._save_global_name('types.CellType')
-        self.save(())
-        self.write(pickle.REDUCE)
-        self.memoize(obj)
-
-        self._setattrs({'cell_contents': obj.cell_contents})
-
-    dispatch[types.CellType] = save_cell
 
     def save_global(self, obj, name=None):
         """Wires up save_type.
@@ -447,6 +397,53 @@ class Pickler(pickle._Pickler):
         self.write(pickle.REDUCE)
         self.memoize(cls)
         self._setattrs({k: getattr(cls, k) for k in _TYPE_ATTRS})
+
+    def _make_simple_saver(constructor_name, arg_names, attr_names):
+        """Returns a saver for a type which can be saved via REDUCE + BUILD.
+
+        In particular, this works for any type for which:
+        - to construct the type, it suffices to call `constructor(*args)`,
+          then do some setattrs;
+        - the type's constructor is a global (whose name is given in
+          constructor_name); and
+        - the constructor-arguments and attributes to be set are all attributes
+          of the instance (whose names are given in arg_names and attr_names).
+
+        This ultimately works mostly like save_function, just without some of
+        the extra-complicated bits around globals.
+        """
+        def saver(self, obj):
+            memoed = self.memo.get(id(obj))
+            if memoed is not None:
+                self.write(self.get(memoed[0]))
+                return
+
+            self._save_global_name(constructor_name)
+            self.save(tuple(getattr(obj, attr) for attr in arg_names))
+
+            # (This handles if obj is recursive; see class docstring.)
+            memoed = self.memo.get(id(obj))
+            if memoed is not None:
+                self.write(pickle.POP + self.get(memoed[0]))
+                return
+
+            self.write(pickle.REDUCE)
+            self.memoize(obj)
+            if attr_names:
+                self._setattrs({k: getattr(obj, k) for k in attr_names})
+
+        return saver
+
+    dispatch[types.CodeType] = _make_simple_saver(
+        'types.CodeType', _CODE_ARGS, ())
+    dispatch[types.CellType] = _make_simple_saver(
+        'types.CellType', (), ('cell_contents',))
+    dispatch[staticmethod] = _make_simple_saver(
+        'builtins.staticmethod', ('__func__',), ())
+    dispatch[classmethod] = _make_simple_saver(
+        'builtins.classmethod', ('__func__',), ())
+    dispatch[property] = _make_simple_saver(
+        'builtins.property', ('fget', 'fset', 'fdel', '__doc__'), ())
 
 
 def dumps(obj, protocol=None, *, fix_imports=True):

@@ -309,6 +309,37 @@ class SimpleGlobalClass:
         return 3
 
 
+class GlobalMethodfulClass:
+    @staticmethod
+    def s():
+        """A staticmethod"""
+        return 2
+
+    @classmethod
+    def c(cls):
+        """A classmethod"""
+        return cls
+
+    def m(self):
+        """A method"""
+        return self
+
+    @property
+    def p(self):
+        return self
+
+    def get(self):
+        return self._p2
+
+    def set(self, v):
+        self._p2 = v
+
+    def delete(self):
+        del self._p2
+
+    p2 = property(get, set, delete, "A property")
+
+
 class GlobalMetaclass(type): pass
 class GlobalBaseClass(metaclass=GlobalMetaclass): pass
 class GlobalFancyClass(GlobalBaseClass): pass
@@ -325,6 +356,36 @@ class TestClasses(unittest.TestCase):
 
         def method(self):
             return 3
+
+    class ClassLevelMethodfulClass:
+        @staticmethod
+        def s():
+            """A staticmethod"""
+            return 2
+
+        @classmethod
+        def c(cls):
+            """A classmethod"""
+            return cls
+
+        def m(self):
+            """A method"""
+            return self
+
+        @property
+        def p(self):
+            return self
+
+        def get(self):
+            return self._p2
+
+        def set(self, v):
+            self._p2 = v
+
+        def delete(self):
+            del self._p2
+
+        p2 = property(get, set, delete, "A property")
 
     class ClassLevelMetaclass(type): pass
     class ClassLevelBaseClass(metaclass=ClassLevelMetaclass): pass
@@ -352,6 +413,58 @@ class TestClasses(unittest.TestCase):
         _roundtrip_test(self, SimpleLocalClass, test)
         _roundtrip_test(self, self.SimpleClassLevelClass, test)
         _roundtrip_test(self, SimpleGlobalClass, test)
+
+    def test_methods(self):
+        def test(c):
+            self.assertEqual(c.s(), 2)
+            self.assertEqual(c.s.__doc__, "A staticmethod")
+            self.assertIs(c.c(), c)
+            self.assertEqual(c.c.__doc__, "A classmethod")
+            v = c()
+            self.assertIs(v.m(), v)
+            self.assertEqual(v.m.__doc__, "A method")
+            self.assertIs(v.p, v)
+
+            self.assertFalse(hasattr(v, 'p2'))
+            v.p2 = 1
+            self.assertEqual(v.p2, 1)
+            del v.p2
+            self.assertFalse(hasattr(v, 'p2'))
+            self.assertEqual(c.p2.__doc__, "A property")
+
+        class LocalMethodfulClass:
+            @staticmethod
+            def s():
+                """A staticmethod"""
+                return 2
+
+            @classmethod
+            def c(cls):
+                """A classmethod"""
+                return cls
+
+            def m(self):
+                """A method"""
+                return self
+
+            @property
+            def p(self):
+                return self
+
+            def get(self):
+                return self._p2
+
+            def set(self, v):
+                self._p2 = v
+
+            def delete(self):
+                del self._p2
+
+            p2 = property(get, set, delete, "A property")
+
+        _roundtrip_test(self, GlobalMethodfulClass, test)
+        _roundtrip_test(self, self.ClassLevelMethodfulClass, test)
+        _roundtrip_test(self, LocalMethodfulClass, test)
 
     def test_fancy(self):
         def make_test(expected):
