@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # Tested in Python 3.9.  This uses a lot of internals, so it may break in
 # earlier or later versions!
+import _collections_abc
+import importlib
 import importlib.machinery
 import io
 import pickle
@@ -11,12 +13,15 @@ import types
 # known-ish TODO:
 # - modules
 #   - do we need to handle __loader__, __package__, __spec__?
+# - can we simpplify our control flow re save_global etc. as a
+#   reducer_override?
+#   https://docs.python.org/3/library/pickle.html#custom-reduction-for-types-functions-and-other-objects
 # - fuzz-test by pickling real modules/functions/etc.
 # - blog post:
 #   - intro/problem-statement
 #   - what is a function, and the basic (non-recursive/ignoring globals) method
 #   - recursion is a mess
-#   - don't use this (but read the code)
+#   - don't use this (but read the code), maybe don't use pickle either
 #
 # Open problems:
 # - generators, async generators, and coroutines -- unclear if it's possible to
@@ -95,6 +100,30 @@ _TYPE_ATTRS = {
 }
 
 
+_TRUE_NAMES = {
+    '_thread.LockType',
+    'threading.ExceptHookArgs',
+    'weakref.ref',
+    'weakref.ProxyType',
+    'weakref.CallableProxyType',
+    'functools._lru_cache_wrapper',
+} | {
+    'types.%s' % name for name in types.__all__
+} | {
+    # Not everything we want is in __all__...
+    '_collections_abc.%s' % name for name in _collections_abc.__dict__
+}
+
+
+_TYPE_TO_TRUE_NAME = {}
+for name in _TRUE_NAMES:
+    module_name, symbol_name = name.rsplit('.', 1)
+    module = importlib.import_module(module_name)
+    symbol = getattr(module, symbol_name)
+    if isinstance(symbol, type):
+        _TYPE_TO_TRUE_NAME[symbol] = name
+
+
 def _type_is_C(cls):
     """Return true if the type is defined in C.
 
@@ -113,9 +142,17 @@ def _type_is_C(cls):
             # Don't try to get smart with builtins:
             'builtins',
             # Nor quasi-builtins:
-            '_frozen_importlib', '_sitebuiltins'):
+            '_frozen_importlib', 'importlib.abc', '_sitebuiltins', 'types',
+            # Contain some builtins, and very system-specific anyway:
+            'os', 'sys', 'signal',
+            # TODO: figure out how to pickle weakrefs; until such time treat
+            # them as builtins.
+            'weakref', 'unittest.main', 'unittest.signals',
+            # TODO: figure out how to pickle typing.Gneric.__class_getitem__
+            'typing',
+    ):
         return True
-    
+
     module = sys.modules.get(modulename)
     if not isinstance(module, types.ModuleType):
         return True
@@ -123,6 +160,16 @@ def _type_is_C(cls):
     if isinstance(getattr(module, '__loader__', None),
                   importlib.machinery.ExtensionFileLoader):
         return False
+
+    if getattr(cls, '__slots__', None) is None:
+        for k, v in cls.__dict__.items():
+            # member/slot descriptors should go with __slots__ (I think?), if
+            # they don't, that seems to mean a type with both C and Python
+            # implementations where the C implementation doesn't bother to fake
+            # __slots__.
+            if isinstance(v, (types.MemberDescriptorType,
+                              types.WrapperDescriptorType)):
+                return True
 
     filename = getattr(module, '__file__', None)
     if filename is None:
@@ -353,6 +400,9 @@ class Pickler(pickle._Pickler):
         elif issubclass(cls, type):
             # TODO: flag to try/except this for all types:
             if _type_is_C(obj):
+                name = _TYPE_TO_TRUE_NAME.get(obj)
+                if name is not None:
+                    return self._save_global_name(name)
                 # C types we give up and save as globals.  (I mean, we could
                 # try to serialize the .so, but, even more yikes.)
                 return super().save_global(obj)
@@ -375,6 +425,13 @@ class Pickler(pickle._Pickler):
             self.write(self.get(memoed[0]))
             return
 
+        slots = getattr(cls, '__slots__', ())
+        # Apparently `__slots__ = "the_slot"` is legal???
+        if isinstance(slots, str):
+            slots = (slots,)
+        elif not isinstance(slots, tuple):  # an iterable, I hope
+            slots = tuple(slots)
+
         # Else, we save the type as a call to type(name, bases, dict).  
         # The arguments to type() are simple: type(name, bases, dict).  We'll
         # fill in __dict__ specially below.
@@ -383,10 +440,10 @@ class Pickler(pickle._Pickler):
                 # getset_descriptor objects), and will get initialized just
                 # fine automagically, so omit them to avoid infinite recursion
                 # or other strange nonsense.  Similarly any attr in __slots__
-                # is a member_descriptor.
+                # is a member_descriptor.  God knows what's happening with
+                # _abc_impl, I've never understood the implementation of abc.
                 {k: v for k, v in cls.__dict__.items()
-                 if k not in ('__dict__', '__weakref__')
-                 + getattr(cls, '__slots__', ())})
+                 if k not in ('__dict__', '__weakref__', '_abc_impl') + slots})
 
         # Now save the class, similar to functions.
         if type(cls) is type:
@@ -425,6 +482,13 @@ class Pickler(pickle._Pickler):
                 self.write(self.get(memoed[0]))
                 return
 
+            if isinstance(obj, types.ModuleType) and obj.__name__ == 'sys':
+                self._save_global_name('builtins.__import__')
+                self.save((obj.__name__,))
+                self.write(pickle.REDUCE)
+                self.memoize(obj)
+                return
+
             self._save_global_name(constructor_name)
             self.save(tuple(getattr(obj, attr) for attr in arg_names))
 
@@ -451,6 +515,9 @@ class Pickler(pickle._Pickler):
         'builtins.classmethod', ('__func__',), ())
     dispatch[property] = _make_simple_saver(
         'builtins.property', ('fget', 'fset', 'fdel', '__doc__'), ())
+    dispatch[types.ModuleType] = _make_simple_saver(
+        'types.ModuleType', ('__name__', '__doc__'),
+        ('__dict__', '__loader__', '__package__', '__spec__'))
 
 
 def dumps(obj, protocol=None, *, fix_imports=True):

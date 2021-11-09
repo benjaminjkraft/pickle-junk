@@ -581,3 +581,11 @@ class TestClasses(unittest.TestCase):
         test(GlobalReduceClass)
         test(self.ClassLevelReduceClass)
         test(LocalReduceClass)
+
+
+class TestModules(unittest.TestCase):
+    def test_pickle_function(self):
+        def test(mod):
+            self.assertEqual(pickle.loads(mod.dumps(1)), 1)
+
+        _roundtrip_test(self, pickle_function, test)
